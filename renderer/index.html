@@ -18,8 +18,12 @@
     <div class="brand">
       <span class="brand-dot"></span>
       <span class="brand-text">Discord Video Compressor</span>
+      <span class="brand-version" id="version-tag">v—</span>
     </div>
     <div class="theme-switch" role="tablist" aria-label="Theme">
+      <button class="theme-btn theme-auto" data-theme="auto" title="Follow system" aria-label="Auto theme">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 3a9 9 0 1 0 0 18V3z"/></svg>
+      </button>
       <button class="theme-btn" data-theme="midnight" title="Midnight" aria-label="Midnight theme"></button>
       <button class="theme-btn" data-theme="discord" title="Discord" aria-label="Discord theme"></button>
       <button class="theme-btn" data-theme="sunset" title="Sunset" aria-label="Sunset theme"></button>
@@ -28,13 +32,22 @@
     </div>
   </header>
 
-  <main class="card stagger">
+  <main class="card stagger" id="card">
     <section class="row">
       <label class="field" for="input-path">
-        <span class="field-label">Input video</span>
+        <span class="field-label">Input video <span class="dim-hint">(or drop a file anywhere)</span></span>
         <div class="picker">
           <input id="input-path" type="text" placeholder="Choose a video file..." readonly />
           <button class="btn btn-ghost" id="pick-input">Browse</button>
+        </div>
+        <div class="source-info" id="source-info" hidden>
+          <span id="src-duration">--</span>
+          <span class="dot">·</span>
+          <span id="src-resolution">--</span>
+          <span class="dot">·</span>
+          <span id="src-codec">--</span>
+          <span class="dot">·</span>
+          <span id="src-size">--</span>
         </div>
       </label>
     </section>
@@ -90,6 +103,62 @@
       </div>
     </section>
 
+    <details class="row options-row" id="options" open>
+      <summary>
+        <span class="field-label">Encoding options</span>
+        <span class="summary-hint">codec · preset · trim · audio</span>
+        <span class="caret" aria-hidden="true">▾</span>
+      </summary>
+
+      <div class="options-grid">
+        <label class="opt">
+          <span class="opt-label">Codec / encoder</span>
+          <select id="codec-select" class="select"></select>
+          <span class="opt-hint" id="codec-hint">Probing...</span>
+        </label>
+
+        <label class="opt">
+          <span class="opt-label">Mode</span>
+          <div class="seg" role="radiogroup" aria-label="Encoding mode">
+            <button type="button" class="seg-btn" data-mode="twopass">Two-pass</button>
+            <button type="button" class="seg-btn active" data-mode="fast">Fast (1-pass)</button>
+          </div>
+          <span class="opt-hint">Two-pass = more accurate size; Fast = quicker</span>
+        </label>
+
+        <label class="opt">
+          <span class="opt-label">Quality preset</span>
+          <div class="seg" role="radiogroup" aria-label="Quality preset">
+            <button type="button" class="seg-btn" data-preset="fastest">Fastest</button>
+            <button type="button" class="seg-btn active" data-preset="balanced">Balanced</button>
+            <button type="button" class="seg-btn" data-preset="quality">Max quality</button>
+          </div>
+          <span class="opt-hint">Slower presets = better quality at the same bitrate</span>
+        </label>
+
+        <div class="opt opt-trim">
+          <span class="opt-label">Trim <span class="dim-hint">(optional)</span></span>
+          <div class="trim-row">
+            <input id="trim-start" class="input-time" placeholder="0:00" />
+            <span class="dim-hint">to</span>
+            <input id="trim-end" class="input-time" placeholder="end" />
+            <button type="button" class="btn btn-ghost btn-tiny" id="trim-clear">Clear</button>
+          </div>
+          <span class="opt-hint" id="trim-hint">--</span>
+        </div>
+
+        <label class="opt opt-mute">
+          <span class="opt-label">Audio</span>
+          <label class="check">
+            <input type="checkbox" id="mute-audio" />
+            <span class="check-box" aria-hidden="true"></span>
+            <span>Strip audio (max video quality)</span>
+          </label>
+          <span class="opt-hint">All bitrate goes to video. Useful for very short clips.</span>
+        </label>
+      </div>
+    </details>
+
     <section class="row progress-row">
       <div class="progress" aria-hidden="true">
         <div class="progress-fill" id="progress-fill"></div>
@@ -102,11 +171,13 @@
     </section>
 
     <section class="row actions">
-      <button class="btn btn-primary" id="start-btn">
+      <button class="btn btn-primary" id="start-btn" title="Compress (Space)">
         <span class="btn-label">Compress</span>
         <span class="btn-spinner" aria-hidden="true"></span>
       </button>
-      <button class="btn btn-ghost" id="cancel-btn" disabled>Cancel</button>
+      <button class="btn btn-ghost" id="cancel-btn" disabled title="Cancel (Esc)">Cancel</button>
+      <span class="actions-spacer"></span>
+      <button class="btn btn-ghost btn-tiny" id="export-log-btn" title="Save the recent ffmpeg log">Export log</button>
     </section>
 
     <section class="row stats-row">
@@ -147,6 +218,20 @@
       </div>
     </section>
   </main>
+
+  <div class="drop-overlay" id="drop-overlay" aria-hidden="true">
+    <div class="drop-pulse"></div>
+    <div class="drop-card">
+      <div class="drop-icon">
+        <svg viewBox="0 0 64 64" width="48" height="48" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M32 8v36"/>
+          <path d="M16 28l16-16 16 16"/>
+          <path d="M8 56h48"/>
+        </svg>
+      </div>
+      <div class="drop-title">Drop video to compress</div>
+    </div>
+  </div>
 
   <div class="toast-stack" id="toasts" aria-live="polite"></div>
 

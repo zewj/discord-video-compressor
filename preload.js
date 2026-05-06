@@ -1,12 +1,23 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
   checkEnv: () => ipcRenderer.invoke('env:check'),
   pickInput: () => ipcRenderer.invoke('dialog:openInput'),
   pickOutput: (suggested) => ipcRenderer.invoke('dialog:saveOutput', suggested),
+  saveLog: () => ipcRenderer.invoke('dialog:saveLog'),
+  probeMedia: (path) => ipcRenderer.invoke('media:probe', path),
   startCompress: (opts) => ipcRenderer.invoke('compress:start', opts),
   cancelCompress: () => ipcRenderer.invoke('compress:cancel'),
   revealInFolder: (p) => ipcRenderer.invoke('shell:reveal', p),
+  openExternal: (url) => ipcRenderer.invoke('shell:open', url),
+  resolveAvailable: (p) => ipcRenderer.invoke('fs:resolveAvailable', p),
+  checkUpdate: () => ipcRenderer.invoke('update:check'),
+
+  // For drag-drop support: in modern Electron the renderer can't read
+  // file.path directly; webUtils.getPathForFile is the supported way to
+  // resolve a dropped File to its filesystem path.
+  pathForFile: (file) => webUtils.getPathForFile(file),
+
   onProgress: (cb) => {
     const handler = (_e, data) => cb(data);
     ipcRenderer.on('progress', handler);
@@ -16,5 +27,15 @@ contextBridge.exposeInMainWorld('api', {
     const handler = (_e, data) => cb(data);
     ipcRenderer.on('stats', handler);
     return () => ipcRenderer.removeListener('stats', handler);
+  },
+  onEncoders: (cb) => {
+    const handler = (_e, data) => cb(data);
+    ipcRenderer.on('encoders', handler);
+    return () => ipcRenderer.removeListener('encoders', handler);
+  },
+  onSystemTheme: (cb) => {
+    const handler = (_e, data) => cb(data);
+    ipcRenderer.on('theme:os', handler);
+    return () => ipcRenderer.removeListener('theme:os', handler);
   },
 });
