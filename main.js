@@ -40,15 +40,27 @@ function sampleStats() {
 // ---------- ffmpeg discovery ----------
 function findExe(name) {
   const exe = process.platform === 'win32' ? `${name}.exe` : name;
+
+  // 1. Anything on PATH.
   const onPath = process.env.PATH.split(path.delimiter)
     .map(p => path.join(p, exe))
-    .find(p => fs.existsSync(p));
+    .find(p => p && fs.existsSync(p));
   if (onPath) return onPath;
-  if (process.platform === 'win32') {
-    const fallback = path.join('C:\\ffmpeg\\bin', exe);
-    if (fs.existsSync(fallback)) return fallback;
-  }
-  return null;
+
+  if (process.platform !== 'win32') return null;
+
+  // 2. Bundled alongside the packaged app: <install>/ffmpeg/{ffmpeg,ffprobe}.exe
+  //    In packaged mode app.getAppPath() returns the asar path, so derive the
+  //    install dir from the .exe location instead.
+  const candidates = [];
+  try {
+    const exeDir = path.dirname(process.execPath); // <install> dir when packaged
+    candidates.push(path.join(exeDir, 'ffmpeg', exe));
+  } catch (_) {}
+  // 3. Common manual install location.
+  candidates.push(path.join('C:\\ffmpeg\\bin', exe));
+
+  return candidates.find(p => fs.existsSync(p)) || null;
 }
 const FFMPEG = findExe('ffmpeg');
 const FFPROBE = findExe('ffprobe');

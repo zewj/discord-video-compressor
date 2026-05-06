@@ -2,7 +2,7 @@
 ; Run via: makensis installer.nsi   (after `npm run build`)
 
 !define APP_NAME       "Discord Video Compressor"
-!define APP_VERSION    "1.0.0"
+!define APP_VERSION    "1.1.0"
 !define APP_PUBLISHER  "Neko"
 !define APP_EXE        "Discord Video Compressor.exe"
 !define APP_DIR_NAME   "DiscordVideoCompressor"
@@ -42,6 +42,20 @@ Section "Install" SecInstall
   SetOutPath "$INSTDIR"
   ; Pull the entire packaged Electron app folder.
   File /r "..\dist\Discord Video Compressor-win32-x64\*.*"
+
+  ; Bundle the ffmpeg setup script.
+  SetOutPath "$INSTDIR"
+  File "install_ffmpeg.ps1"
+
+  ; Detect ffmpeg; if absent, download essentials build into $INSTDIR\ffmpeg.
+  DetailPrint "Checking for ffmpeg..."
+  nsExec::ExecToStack 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\install_ffmpeg.ps1" -TargetDir "$INSTDIR\ffmpeg"'
+  Pop $0
+  Pop $1
+  ${If} $0 != 0
+    MessageBox MB_ICONEXCLAMATION|MB_OK \
+      "Couldn't auto-install ffmpeg (exit $0).$\r$\n$\r$\nThe app will still install, but you'll need to install ffmpeg manually for compression to work.$\r$\n$\r$\nDetails:$\r$\n$1"
+  ${EndIf}
 
   ; Start Menu shortcut
   CreateDirectory "$SMPROGRAMS\${APP_NAME}"
