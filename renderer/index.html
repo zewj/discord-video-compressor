@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en" data-theme="midnight">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+  <title>Discord Video Compressor</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="aurora" aria-hidden="true">
+    <span class="blob b1"></span>
+    <span class="blob b2"></span>
+    <span class="blob b3"></span>
+  </div>
+
+  <header class="titlebar">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <span class="brand-text">Discord Video Compressor</span>
+    </div>
+    <div class="theme-switch" role="tablist" aria-label="Theme">
+      <button class="theme-btn" data-theme="midnight" title="Midnight" aria-label="Midnight theme"></button>
+      <button class="theme-btn" data-theme="discord" title="Discord" aria-label="Discord theme"></button>
+      <button class="theme-btn" data-theme="sunset" title="Sunset" aria-label="Sunset theme"></button>
+      <button class="theme-btn" data-theme="forest" title="Forest" aria-label="Forest theme"></button>
+      <button class="theme-btn" data-theme="light" title="Light" aria-label="Light theme"></button>
+    </div>
+  </header>
+
+  <main class="card stagger">
+    <section class="row">
+      <label class="field" for="input-path">
+        <span class="field-label">Input video</span>
+        <div class="picker">
+          <input id="input-path" type="text" placeholder="Choose a video file..." readonly />
+          <button class="btn btn-ghost" id="pick-input">Browse</button>
+        </div>
+      </label>
+    </section>
+
+    <section class="row">
+      <label class="field" for="output-path">
+        <span class="field-label">Output file</span>
+        <div class="picker">
+          <input id="output-path" type="text" placeholder="output.mp4" />
+          <button class="btn btn-ghost" id="pick-output">Save as</button>
+        </div>
+      </label>
+    </section>
+
+    <section class="row">
+      <span class="field-label">Discord tier</span>
+      <div class="tiers" role="radiogroup" aria-label="Discord upload tier">
+        <label class="tier" data-tier="free">
+          <input type="radio" name="tier" value="free" checked />
+          <div class="tier-card">
+            <div class="tier-title">No Nitro</div>
+            <div class="tier-size">10 MB</div>
+            <div class="tier-hint">Default Discord limit</div>
+          </div>
+        </label>
+        <label class="tier" data-tier="basic">
+          <input type="radio" name="tier" value="basic" />
+          <div class="tier-card">
+            <div class="tier-title">Nitro Basic</div>
+            <div class="tier-size">50 MB</div>
+            <div class="tier-hint">Basic subscription</div>
+          </div>
+        </label>
+        <label class="tier" data-tier="nitro">
+          <input type="radio" name="tier" value="nitro" />
+          <div class="tier-card">
+            <div class="tier-title">Nitro</div>
+            <div class="tier-size">500 MB</div>
+            <div class="tier-hint">Full subscription</div>
+          </div>
+        </label>
+        <label class="tier" data-tier="custom">
+          <input type="radio" name="tier" value="custom" />
+          <div class="tier-card">
+            <div class="tier-title">Custom</div>
+            <div class="tier-size">
+              <input id="custom-mb" type="number" min="1" step="1" value="25" />
+              <span class="unit">MB</span>
+            </div>
+            <div class="tier-hint">Pick your own target</div>
+          </div>
+        </label>
+      </div>
+    </section>
+
+    <section class="row progress-row">
+      <div class="progress" aria-hidden="true">
+        <div class="progress-fill" id="progress-fill"></div>
+        <div class="progress-shimmer"></div>
+      </div>
+      <div class="status-line">
+        <span id="phase">Ready</span>
+        <span id="time-info"></span>
+      </div>
+    </section>
+
+    <section class="row actions">
+      <button class="btn btn-primary" id="start-btn">
+        <span class="btn-label">Compress</span>
+        <span class="btn-spinner" aria-hidden="true"></span>
+      </button>
+      <button class="btn btn-ghost" id="cancel-btn" disabled>Cancel</button>
+    </section>
+
+    <section class="row stats-row">
+      <span class="field-label">System resources</span>
+      <div class="stats-grid">
+        <div class="stat-card">
+          <svg class="ring" viewBox="0 0 100 100" aria-hidden="true">
+            <circle class="ring-track" cx="50" cy="50" r="42"></circle>
+            <circle class="ring-fill" id="cpu-ring" cx="50" cy="50" r="42"></circle>
+          </svg>
+          <div class="stat-body">
+            <div class="stat-title">CPU</div>
+            <div class="stat-value" id="cpu-value">0%</div>
+            <div class="stat-meta" id="cpu-meta">--</div>
+          </div>
+        </div>
+
+        <div class="stat-card">
+          <svg class="ring" viewBox="0 0 100 100" aria-hidden="true">
+            <circle class="ring-track" cx="50" cy="50" r="42"></circle>
+            <circle class="ring-fill alt" id="ram-ring" cx="50" cy="50" r="42"></circle>
+          </svg>
+          <div class="stat-body">
+            <div class="stat-title">RAM</div>
+            <div class="stat-value" id="ram-value">0%</div>
+            <div class="stat-meta" id="ram-meta">-- / --</div>
+          </div>
+        </div>
+
+        <div class="stat-card wide">
+          <div class="stat-body">
+            <div class="stat-title">Encoder</div>
+            <div class="stat-value" id="enc-value">Idle</div>
+            <div class="stat-meta" id="enc-meta">No active ffmpeg</div>
+            <div class="mini-bar"><div class="mini-bar-fill" id="enc-bar"></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast-stack" id="toasts" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

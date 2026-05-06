@@ -1,0 +1,8 @@
+node_modules/
+dist/
+build/probe*
+build/source.png
+build/icon_*.png
+*.log
+.DS_Store
+Thumbs.db
