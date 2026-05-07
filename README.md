@@ -1,8 +1,8 @@
 # Discord Video Compressor
 
-A desktop app that re-encodes videos so they fit under Discord's upload limits. Built with Electron, runs on Windows, wraps `ffmpeg` for the actual encoding.
+A desktop app that re-encodes videos so they fit under Discord's upload limits. Built with Electron, runs on **Windows and Linux**, wraps `ffmpeg` for the actual encoding.
 
-![themes](https://img.shields.io/badge/themes-6-8b5cf6) ![codecs](https://img.shields.io/badge/codecs-H.264%20%2F%20HEVC%20%2F%20NVENC%20%2F%20QSV%20%2F%20AMF-38bdf8) ![installer](https://img.shields.io/badge/installer-NSIS%20%2B%20auto--ffmpeg-22c55e)
+![themes](https://img.shields.io/badge/themes-6-8b5cf6) ![codecs](https://img.shields.io/badge/codecs-H.264%20%2F%20HEVC%20%2F%20NVENC%20%2F%20QSV%20%2F%20AMF-38bdf8) ![platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-22c55e)
 
 ---
 
@@ -70,26 +70,39 @@ If the chosen target leaves less than ~100 kbps for video, the app refuses to en
 
 ## Requirements
 
-- **Windows 10/11 (x64)**
-- **ffmpeg + ffprobe** — handled automatically:
+### Windows 10/11 (x64)
+- **ffmpeg + ffprobe** — handled automatically by the installer:
   - The installer detects ffmpeg on PATH or at `C:\ffmpeg\bin`.
   - If neither is present, it downloads the latest "essentials" build from gyan.dev and bundles `ffmpeg.exe` + `ffprobe.exe` into the install folder.
   - Lookup order at runtime: PATH → `<install>\ffmpeg\` → `C:\ffmpeg\bin`.
 - **Internet** — only needed at install time, only when ffmpeg isn't already present.
-- **Hardware acceleration (optional)** — works automatically when available:
-  - **NVIDIA**: GeForce GTX 600+ / RTX (any) — driver provides `h264_nvenc` / `hevc_nvenc`.
-  - **Intel**: 6th-gen Core or newer — driver provides `h264_qsv` / `hevc_qsv`.
-  - **AMD**: Radeon RX series with AMF driver — provides `h264_amf` / `hevc_amf`.
+
+### Linux x64
+- **ffmpeg + ffprobe** — install via your package manager:
+  - Debian/Ubuntu: `sudo apt install ffmpeg`
+  - Fedora/RHEL: `sudo dnf install ffmpeg` (RPM Fusion repo)
+  - Arch: `sudo pacman -S ffmpeg`
+- The app's lookup order: PATH → `<install>/ffmpeg/` (drop a static build there for portable use).
+
+### Hardware acceleration (optional, both platforms)
+Works automatically when available; the codec dropdown shows whatever ffmpeg detects.
+- **NVIDIA**: GeForce GTX 600+ / RTX (any) — driver provides `h264_nvenc` / `hevc_nvenc`.
+- **Intel**: 6th-gen Core or newer — driver provides `h264_qsv` / `hevc_qsv`.
+- **AMD**: Radeon RX series with AMF driver — provides `h264_amf` / `hevc_amf`.
+  Linux: AMF requires the `amdgpu-pro` driver / Mesa-VAAPI users may want `h264_vaapi` (not yet exposed in the dropdown — coming).
 
 ### Building from source (developers)
 
 - **Node.js 18+** (tested on 24)
 - **npm** (ships with Node)
-- **NSIS** (only if you want to rebuild the installer): `winget install NSIS.NSIS`
+- **NSIS** (only if you want to rebuild the Windows installer): `winget install NSIS.NSIS`
+- **tar** (already on Windows 10+ and every Linux distro) for the Linux `.tar.gz`
 
 ---
 
 ## Install
+
+### Windows
 
 1. Download `DiscordVideoCompressor-Setup.exe` from the [latest release](https://github.com/zewj/discord-video-compressor/releases/latest).
 2. Run it. Accept the UAC prompt.
@@ -97,6 +110,31 @@ If the chosen target leaves less than ~100 kbps for video, the app refuses to en
 4. Launch via the Start Menu, Desktop shortcut, or the Finish-page checkbox.
 
 To uninstall: Settings → Apps, or run `Uninstall.exe` from the install folder.
+
+### Linux
+
+1. Download `discord-video-compressor-linux-x64.tar.gz` from the [latest release](https://github.com/zewj/discord-video-compressor/releases/latest).
+2. Make sure ffmpeg is installed: `sudo apt install ffmpeg` (or your distro's equivalent).
+3. Extract and run:
+   ```bash
+   tar -xzf discord-video-compressor-linux-x64.tar.gz
+   cd discord-video-compressor-linux-x64
+   ./discord-video-compressor
+   ```
+4. (Optional) Install a desktop entry so it shows up in your menu:
+   ```bash
+   cp icon-256.png ~/.local/share/icons/discord-video-compressor.png
+   cat > ~/.local/share/applications/discord-video-compressor.desktop <<EOF
+   [Desktop Entry]
+   Type=Application
+   Name=Discord Video Compressor
+   Exec=$(pwd)/discord-video-compressor
+   Icon=discord-video-compressor
+   Categories=AudioVideo;Video;
+   EOF
+   ```
+
+The Linux build is a folder distribution (no installer). To uninstall, just delete the folder and (if you created one) the `.desktop` file.
 
 ---
 
@@ -119,20 +157,27 @@ To uninstall: Settings → Apps, or run `Uninstall.exe` from the install folder.
 
 ## Building from source
 
-```powershell
+```bash
 git clone https://github.com/zewj/discord-video-compressor.git
 cd discord-video-compressor
 npm install
 
-# Run in development
+# Run in development (works on Windows + Linux)
 npm start
 
-# Package the app (folder with .exe in dist\)
-npm run build
-
-# Build the installer (writes dist\DiscordVideoCompressor-Setup.exe)
+# Windows: package + build installer
+npm run build:win
 & "C:\Program Files (x86)\NSIS\makensis.exe" build\installer.nsi
+
+# Linux: package + tarball
+npm run build:linux
+tar -czf dist/discord-video-compressor-linux-x64.tar.gz -C dist discord-video-compressor-linux-x64
+
+# Build both platforms in one shot
+npm run build:all
 ```
+
+`npm run build` is an alias for `build:win` (kept for backward compat).
 
 ---
 

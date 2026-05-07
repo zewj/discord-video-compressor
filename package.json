@@ -1,13 +1,16 @@
 {
   "name": "discord-video-compressor",
   "productName": "Discord Video Compressor",
-  "version": "1.3.4",
+  "version": "1.4.0",
   "description": "Compress videos under Discord upload limits",
   "main": "main.js",
   "author": "Neko",
   "scripts": {
     "start": "electron .",
-    "build": "electron-packager . \"Discord Video Compressor\" --platform=win32 --arch=x64 --out=dist --overwrite --asar --icon=build/icon.ico --extra-resource=build/icon.ico --ignore=\"^/(dist|build/(?!icon\\.ico$))($|/)\""
+    "build": "npm run build:win",
+    "build:win": "electron-packager . \"Discord Video Compressor\" --platform=win32 --arch=x64 --out=dist --overwrite --asar --icon=build/icon.ico --extra-resource=build/icon.ico --ignore=\"^/(dist|build/(?!icon\\.(ico|png)$|icon-256\\.png$))($|/)\"",
+    "build:linux": "electron-packager . \"discord-video-compressor\" --platform=linux --arch=x64 --out=dist --overwrite --asar --icon=build/icon-256.png --extra-resource=build/icon-256.png --ignore=\"^/(dist|build/(?!icon\\.(ico|png)$|icon-256\\.png$))($|/)\"",
+    "build:all": "npm run build:win && npm run build:linux"
   },
   "devDependencies": {
     "electron": "^33.0.0",

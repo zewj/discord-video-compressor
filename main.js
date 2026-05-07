@@ -44,19 +44,27 @@ function sampleStats() {
 function findExe(name) {
   const exe = process.platform === 'win32' ? `${name}.exe` : name;
 
+  // 1. Anything on PATH.
   const onPath = process.env.PATH.split(path.delimiter)
     .map(p => path.join(p, exe))
     .find(p => p && fs.existsSync(p));
   if (onPath) return onPath;
 
-  if (process.platform !== 'win32') return null;
-
+  // 2. Bundled alongside the packaged app at <install>/ffmpeg/<binary>.
+  //    Works on every platform — Linux users can drop a static ffmpeg
+  //    build there for a portable install without polluting PATH; the
+  //    Windows installer auto-populates this path via install_ffmpeg.ps1.
   const candidates = [];
   try {
     const exeDir = path.dirname(process.execPath);
     candidates.push(path.join(exeDir, 'ffmpeg', exe));
   } catch (_) {}
-  candidates.push(path.join('C:\\ffmpeg\\bin', exe));
+
+  // 3. Common manual install location on Windows.
+  if (process.platform === 'win32') {
+    candidates.push(path.join('C:\\ffmpeg\\bin', exe));
+  }
+
   return candidates.find(p => fs.existsSync(p)) || null;
 }
 const FFMPEG = findExe('ffmpeg');
@@ -472,11 +480,20 @@ function registerIpc(win) {
 
 // ---------- window ----------
 function resolveIconPath() {
-  const candidates = [
-    path.join(__dirname, 'build', 'icon.ico'),
-    process.resourcesPath ? path.join(process.resourcesPath, 'icon.ico') : null,
-  ].filter(Boolean);
-  return candidates.find(p => p && fs.existsSync(p)) || undefined;
+  // Prefer .ico on Windows, .png everywhere else. Both files are committed
+  // and copied into resources/ by the packager via --extra-resource.
+  const winFirst = process.platform === 'win32';
+  const ico = ['build/icon.ico', 'icon.ico'];
+  const png = ['build/icon-256.png', 'icon-256.png'];
+  const order = winFirst ? [...ico, ...png] : [...png, ...ico];
+  const dirs = [__dirname, process.resourcesPath].filter(Boolean);
+  for (const d of dirs) {
+    for (const f of order) {
+      const p = path.join(d, f);
+      if (fs.existsSync(p)) return p;
+    }
+  }
+  return undefined;
 }
 
 function createWindow() {

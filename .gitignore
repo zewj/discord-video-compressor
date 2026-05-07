@@ -2,6 +2,8 @@ node_modules/
 dist/
 build/probe*
 build/source.png
+# Multi-size build artifacts (icon_16.png .. icon_128.png, etc.) — only
+# the final icon.ico and the Linux icon-256.png are committed.
 build/icon_*.png
 *.log
 .DS_Store
