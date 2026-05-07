@@ -139,12 +139,17 @@ html[data-theme="light"] .blob { opacity: 0.35; mix-blend-mode: multiply; }
   color: var(--text);
   transition: transform 200ms var(--ease-spring), border-color 200ms var(--ease), box-shadow 200ms var(--ease);
 }
-.theme-auto { background: linear-gradient(135deg, #94a3b8, #64748b); }
-.theme-btn[data-theme="midnight"] { background: linear-gradient(135deg,#6366f1,#ec4899); }
+/* Auto: hard diagonal split — clearly signals "follows system". */
+.theme-auto {
+  background: linear-gradient(135deg, #0b0e1f 0%, #0b0e1f 50%, #f8fafc 50%, #f8fafc 100%);
+}
+/* Midnight: deep navy → indigo, no pink (was overlapping with Light visually). */
+.theme-btn[data-theme="midnight"] { background: linear-gradient(135deg,#1e1b4b,#6366f1); }
 .theme-btn[data-theme="discord"]  { background: linear-gradient(135deg,#5865f2,#00b0f4); }
 .theme-btn[data-theme="sunset"]   { background: linear-gradient(135deg,#f59e0b,#fb7185); }
 .theme-btn[data-theme="forest"]   { background: linear-gradient(135deg,#10b981,#84cc16); }
-.theme-btn[data-theme="light"]    { background: linear-gradient(135deg,#c4b5fd,#bae6fd); }
+/* Light: white → ice-blue, no purple — clearly bright. */
+.theme-btn[data-theme="light"]    { background: linear-gradient(135deg,#ffffff,#bfdbfe); }
 .theme-btn:hover { transform: scale(1.15); }
 .theme-btn.active {
   border-color: var(--text);
