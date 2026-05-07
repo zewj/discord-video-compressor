@@ -77,15 +77,12 @@
               <span class="dot">·</span>
               <span id="src-size">--</span>
             </div>
-          </label>
-        </div>
-
-        <div class="row">
-          <label class="field" for="output-path">
-            <span class="field-label">Output file</span>
-            <div class="picker">
-              <input id="output-path" type="text" placeholder="output.mp4" />
-              <button class="btn btn-ghost" id="pick-output">Save as</button>
+            <div class="output-line">
+              <span class="output-arrow" aria-hidden="true">↳</span>
+              <span class="dim-hint">Save to</span>
+              <span class="output-display" id="output-display" title="Click to change">—</span>
+              <input id="output-path" type="hidden" />
+              <button type="button" class="btn-link" id="pick-output">Change</button>
             </div>
           </label>
         </div>
@@ -121,13 +118,25 @@
               <input type="radio" name="tier" value="custom" />
               <div class="tier-card">
                 <div class="tier-title">Custom</div>
-                <div class="tier-size">
-                  <input id="custom-mb" type="number" min="1" step="1" value="25" />
-                  <span class="unit">MB</span>
-                </div>
+                <div class="tier-size" id="custom-tier-display">25 MB</div>
                 <div class="tier-hint">Pick your own target</div>
               </div>
             </label>
+          </div>
+
+          <div class="custom-mb-row" id="custom-mb-row" hidden>
+            <span class="opt-label">Custom target size</span>
+            <div class="slider-row">
+              <input type="range" id="custom-mb-slider" class="slider"
+                     min="1" max="500" step="1" value="25" />
+              <div class="slider-value">
+                <input type="number" id="custom-mb" min="1" step="1" value="25" />
+                <span class="unit">MB</span>
+              </div>
+            </div>
+            <div class="slider-ticks" aria-hidden="true">
+              <span>1</span><span>50</span><span>100</span><span>250</span><span>500</span>
+            </div>
           </div>
         </div>
       </section>

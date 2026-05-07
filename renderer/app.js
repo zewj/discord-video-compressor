@@ -27,9 +27,13 @@ const CODEC_PRIORITY = [
 const els = {
   inputPath: document.getElementById('input-path'),
   outputPath: document.getElementById('output-path'),
+  outputDisplay: document.getElementById('output-display'),
   pickInput: document.getElementById('pick-input'),
   pickOutput: document.getElementById('pick-output'),
   customMb: document.getElementById('custom-mb'),
+  customMbSlider: document.getElementById('custom-mb-slider'),
+  customMbRow: document.getElementById('custom-mb-row'),
+  customTierDisplay: document.getElementById('custom-tier-display'),
   startBtn: document.getElementById('start-btn'),
   cancelBtn: document.getElementById('cancel-btn'),
   exportLogBtn: document.getElementById('export-log-btn'),
@@ -175,6 +179,19 @@ function toast(kind, title, body, action) {
 }
 
 // ---------- File pickers + auto output ----------
+function setOutputPath(p) {
+  els.outputPath.value = p || '';
+  if (!p) {
+    els.outputDisplay.textContent = '—';
+    els.outputDisplay.title = '';
+  } else {
+    // Show only the basename; full path lives in the title tooltip.
+    const slash = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'));
+    els.outputDisplay.textContent = slash >= 0 ? p.slice(slash + 1) : p;
+    els.outputDisplay.title = p;
+  }
+}
+
 async function setInputPath(p) {
   if (!p) return;
   els.inputPath.value = p;
@@ -182,7 +199,7 @@ async function setInputPath(p) {
   const stem = dot >= 0 ? p.slice(0, dot) : p;
   const desired = stem + '_discord.mp4';
   // Auto-increment if the suggested target already exists.
-  els.outputPath.value = await window.api.resolveAvailable(desired);
+  setOutputPath(await window.api.resolveAvailable(desired));
   // Show source info.
   showSourceInfo(p);
 }
@@ -216,8 +233,10 @@ els.pickInput.addEventListener('click', async () => {
 els.pickOutput.addEventListener('click', async () => {
   const suggested = els.outputPath.value || 'output.mp4';
   const p = await window.api.pickOutput(suggested);
-  if (p) els.outputPath.value = p;
+  if (p) setOutputPath(p);
 });
+// Clicking the displayed filename opens the same dialog.
+els.outputDisplay.addEventListener('click', () => els.pickOutput.click());
 
 // ---------- Drag & drop ----------
 let dragDepth = 0;
@@ -441,7 +460,7 @@ async function startCompress() {
 
   // Auto-increment output filename if it would overwrite something.
   output = await window.api.resolveAvailable(output);
-  els.outputPath.value = output;
+  setOutputPath(output);
 
   const env = await window.api.checkEnv();
   if (!env.ffmpeg || !env.ffprobe) {
@@ -499,9 +518,47 @@ els.exportLogBtn.addEventListener('click', async () => {
   });
 });
 
-els.customMb.addEventListener('focus', () => {
-  document.querySelector('input[name="tier"][value="custom"]').checked = true;
+// ---------- Custom MB slider + number input sync ----------
+function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
+
+function setCustomMb(value, source) {
+  let n = parseFloat(value);
+  if (!Number.isFinite(n) || n < 1) n = 1;
+  // Number input has no upper bound (user can type higher than slider max);
+  // slider clamps to its range. Only push to slider when source != 'slider'.
+  if (source !== 'number') els.customMb.value = String(Math.round(n * 100) / 100);
+  if (source !== 'slider') els.customMbSlider.value = String(clamp(n, 1, 500));
+  els.customTierDisplay.textContent = `${els.customMb.value} MB`;
+  // Repaint slider's filled track.
+  const sliderPct = (clamp(n, 1, 500) - 1) / 499 * 100;
+  els.customMbSlider.style.setProperty('--filled', `${sliderPct}%`);
+}
+
+els.customMbSlider.addEventListener('input', () => {
+  setCustomMb(els.customMbSlider.value, 'slider');
 });
+els.customMb.addEventListener('input', () => {
+  setCustomMb(els.customMb.value, 'number');
+});
+// Typing into the number input implies "I want Custom" — auto-select it.
+els.customMb.addEventListener('focus', () => selectTier('custom'));
+
+// ---------- Tier change → toggle the Custom slider row ----------
+function selectTier(name) {
+  const radio = document.querySelector(`input[name="tier"][value="${name}"]`);
+  if (radio) radio.checked = true;
+  syncCustomRow();
+}
+function syncCustomRow() {
+  const isCustom = getTier() === 'custom';
+  els.customMbRow.hidden = !isCustom;
+}
+document.querySelectorAll('input[name="tier"]').forEach(r =>
+  r.addEventListener('change', syncCustomRow));
+
+// Initial paint of the Custom row state and slider gradient.
+setCustomMb(els.customMb.value, null);
+syncCustomRow();
 
 // ---------- Keyboard shortcuts ----------
 function isTypingTarget(t) {

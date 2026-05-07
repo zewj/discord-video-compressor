@@ -377,17 +377,132 @@ html[data-theme="light"] .blob { opacity: 0.35; mix-blend-mode: multiply; }
 .tier-title { font-weight: 700; font-size: 14px; }
 .tier-size  { font-size: 18px; font-weight: 700; }
 .tier-hint  { font-size: 11px; color: var(--text-dim); }
-.tier-size input {
-  width: 64px;
-  background: rgba(0,0,0,0.25);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 2px 6px;
-  color: inherit;
-  font-size: 14px;
-  outline: none;
-}
 .tier-size .unit { font-size: 12px; margin-left: 4px; opacity: 0.85; }
+
+/* ----- Compact "Save to" output line ----- */
+.output-line {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 2px 0;
+  flex-wrap: wrap;
+}
+.output-arrow { opacity: 0.5; font-family: monospace; }
+.output-display {
+  color: var(--text);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60ch;
+  flex: 0 1 auto;
+}
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--accent-2);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  transition: text-decoration-color 200ms var(--ease), color 200ms var(--ease), background 200ms var(--ease);
+}
+.btn-link:hover {
+  text-decoration-color: currentColor;
+  background: var(--surface-2);
+}
+
+/* ----- Custom MB row (slider + number) ----- */
+.custom-mb-row {
+  display: flex; flex-direction: column; gap: 8px;
+  margin-top: 12px;
+  padding: 14px 14px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  animation: customRowIn 320ms var(--ease);
+  overflow: hidden;
+}
+.custom-mb-row[hidden] { display: none !important; }
+@keyframes customRowIn {
+  from { opacity: 0; transform: translateY(-6px); max-height: 0; padding-top: 0; padding-bottom: 0; }
+  to   { opacity: 1; transform: translateY(0);    max-height: 200px; }
+}
+.slider-row {
+  display: flex; align-items: center; gap: 14px;
+}
+.slider-value {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 10px;
+  flex-shrink: 0;
+}
+.slider-value input {
+  width: 70px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+  text-align: right;
+}
+.slider-value .unit {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+/* Range slider — webkit appearance overridden so we can style track + thumb. */
+.slider {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  height: 8px;
+  background: linear-gradient(to right,
+    var(--accent) 0%, var(--accent) var(--filled, 0%),
+    var(--surface) var(--filled, 0%), var(--surface) 100%);
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  outline: none;
+  cursor: pointer;
+  transition: box-shadow 200ms var(--ease);
+}
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px; height: 20px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border-radius: 50%;
+  border: 2px solid var(--bg-1);
+  cursor: grab;
+  box-shadow: 0 0 0 0 var(--accent-glow), 0 4px 12px var(--accent-glow);
+  transition: transform 180ms var(--ease-spring), box-shadow 180ms var(--ease);
+}
+.slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+  box-shadow: 0 0 0 6px var(--accent-glow), 0 6px 16px var(--accent-glow);
+}
+.slider::-webkit-slider-thumb:active {
+  cursor: grabbing;
+  transform: scale(1.2);
+}
+.slider:focus-visible { box-shadow: 0 0 0 3px var(--accent-glow); }
+
+.slider-ticks {
+  display: flex; justify-content: space-between;
+  font-size: 10px; color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  padding: 0 8px;
+  letter-spacing: 0.3px;
+}
 
 /* ----- Encoding options grid ----- */
 .options-grid {
