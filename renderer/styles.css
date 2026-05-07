@@ -139,9 +139,10 @@ html[data-theme="light"] .blob { opacity: 0.35; mix-blend-mode: multiply; }
   color: var(--text);
   transition: transform 200ms var(--ease-spring), border-color 200ms var(--ease), box-shadow 200ms var(--ease);
 }
-/* Auto: hard diagonal split — clearly signals "follows system". */
+/* Auto: hard diagonal split, colors match what the swatch resolves to —
+   Discord blurple (dark side) and near-white (light side). */
 .theme-auto {
-  background: linear-gradient(135deg, #0b0e1f 0%, #0b0e1f 50%, #f8fafc 50%, #f8fafc 100%);
+  background: linear-gradient(135deg, #5865f2 0%, #5865f2 50%, #f8fafc 50%, #f8fafc 100%);
 }
 /* Midnight: deep navy → indigo, no pink (was overlapping with Light visually). */
 .theme-btn[data-theme="midnight"] { background: linear-gradient(135deg,#1e1b4b,#6366f1); }
