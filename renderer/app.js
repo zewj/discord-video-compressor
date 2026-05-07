@@ -57,6 +57,59 @@ const els = {
   dropOverlay: document.getElementById('drop-overlay'),
 };
 
+// ---------- Tabs ----------
+const TAB_KEY = 'dvc.tab';
+const tabButtons = document.querySelectorAll('.tab');
+const tabPanels = document.querySelectorAll('.tab-panel');
+const tabIndicator = document.querySelector('.tab-indicator');
+
+function moveIndicatorTo(btn) {
+  if (!btn || !tabIndicator) return;
+  // offsetLeft/Width are relative to the .tabs container (its closest
+  // positioned ancestor), which is what the indicator is absolutely
+  // positioned within.
+  tabIndicator.style.transform = `translateX(${btn.offsetLeft}px)`;
+  tabIndicator.style.width = `${btn.offsetWidth}px`;
+}
+
+function activateTab(name) {
+  let activeBtn = null;
+  tabButtons.forEach(b => {
+    const on = b.dataset.tab === name;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+    if (on) activeBtn = b;
+  });
+  tabPanels.forEach(p => {
+    const on = p.dataset.tab === name;
+    p.hidden = !on;
+    p.classList.toggle('active', on);
+  });
+  if (activeBtn) {
+    // Restart the panel entrance animation by re-flowing.
+    requestAnimationFrame(() => moveIndicatorTo(activeBtn));
+  }
+  try { localStorage.setItem(TAB_KEY, name); } catch (_) {}
+}
+
+tabButtons.forEach(b => {
+  b.addEventListener('click', () => activateTab(b.dataset.tab));
+});
+
+// Recompute the indicator's geometry on resize (font-load shifts, etc.).
+window.addEventListener('resize', () => {
+  const active = document.querySelector('.tab.active');
+  moveIndicatorTo(active);
+});
+
+// Restore last-used tab on launch; default to Compress.
+const initialTab = (() => {
+  try { return localStorage.getItem(TAB_KEY) || 'compress'; }
+  catch { return 'compress'; }
+})();
+// Defer one frame so the layout has measured.
+requestAnimationFrame(() => activateTab(initialTab));
+
 // ---------- Theme handling ----------
 const THEME_KEY = 'dvc.theme';
 const themeButtons = document.querySelectorAll('.theme-btn');
@@ -461,6 +514,12 @@ window.addEventListener('keydown', (e) => {
       window.api.cancelCompress();
     }
     return;
+  }
+  // Ctrl+1/2/3 switch tabs even while typing in inputs.
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+    if (e.key === '1') { e.preventDefault(); activateTab('compress'); return; }
+    if (e.key === '2') { e.preventDefault(); activateTab('encoding'); return; }
+    if (e.key === '3') { e.preventDefault(); activateTab('system');   return; }
   }
   if (isTypingTarget(e.target)) return;
   if (e.code === 'Space') {

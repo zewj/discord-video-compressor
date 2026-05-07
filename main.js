@@ -482,10 +482,10 @@ function resolveIconPath() {
 function createWindow() {
   const iconPath = resolveIconPath();
   const win = new BrowserWindow({
-    width: 880,
-    height: 880,
-    minWidth: 760,
-    minHeight: 720,
+    width: 800,
+    height: 700,
+    minWidth: 720,
+    minHeight: 600,
     backgroundColor: '#0f1226',
     title: 'Discord Video Compressor',
     icon: iconPath,
