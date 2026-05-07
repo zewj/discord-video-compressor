@@ -13,6 +13,21 @@
 html { color-scheme: dark; }
 html[data-theme="light"] { color-scheme: light; }
 
+/* True neutral dark mode. Reached via Auto when the OS is in dark mode.
+   Near-black background, zinc surfaces, soft violet accent (no blurple).
+   Aurora colors are muted so the background reads as flat dark with a
+   barely-there glow instead of vibrant color. */
+html[data-theme="dark"] {
+  --bg-0: #0d0d10;  --bg-1: #1a1a1f;
+  --surface: rgba(255,255,255,0.04); --surface-2: rgba(255,255,255,0.07);
+  --border: rgba(255,255,255,0.10);
+  --text: #f4f4f5; --text-dim: #9ca3af;
+  --accent: #a78bfa; --accent-2: #c4b5fd;
+  --accent-glow: rgba(167,139,250,0.35);
+  --danger: #ef4444; --success: #22c55e;
+  --aurora-1: #2c2c38; --aurora-2: #1f1f28; --aurora-3: #36364a;
+}
+
 html[data-theme="midnight"] {
   --bg-0: #0b0e1f;  --bg-1: #11152e;
   --surface: rgba(255,255,255,0.05); --surface-2: rgba(255,255,255,0.08);
@@ -139,10 +154,10 @@ html[data-theme="light"] .blob { opacity: 0.35; mix-blend-mode: multiply; }
   color: var(--text);
   transition: transform 200ms var(--ease-spring), border-color 200ms var(--ease), box-shadow 200ms var(--ease);
 }
-/* Auto: hard diagonal split, colors match what the swatch resolves to —
-   Discord blurple (dark side) and near-white (light side). */
+/* Auto: hard diagonal split — pure dark on top-left, near-white on
+   bottom-right. Mirrors the actual themes Auto resolves to. */
 .theme-auto {
-  background: linear-gradient(135deg, #5865f2 0%, #5865f2 50%, #f8fafc 50%, #f8fafc 100%);
+  background: linear-gradient(135deg, #0d0d10 0%, #0d0d10 50%, #f8fafc 50%, #f8fafc 100%);
 }
 /* Midnight: deep navy → indigo, no pink (was overlapping with Light visually). */
 .theme-btn[data-theme="midnight"] { background: linear-gradient(135deg,#1e1b4b,#6366f1); }

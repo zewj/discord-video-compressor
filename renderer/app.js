@@ -120,10 +120,10 @@ const themeButtons = document.querySelectorAll('.theme-btn');
 let osIsDark = true;
 
 function effectiveTheme(name) {
-  // Auto: when the OS is in dark mode, use the Discord dark palette; in
-  // light mode use Light. This way Auto isn't a clone of any single theme
-  // button — it's a real device-follow option.
-  return name === 'auto' ? (osIsDark ? 'discord' : 'light') : name;
+  // Auto: dark OS → neutral 'dark' palette (near-black, zinc, soft violet
+  // accent), light OS → 'light'. Distinct from any other named theme so
+  // picking Auto and any specific theme are never the same thing.
+  return name === 'auto' ? (osIsDark ? 'dark' : 'light') : name;
 }
 function applyTheme(name) {
   document.documentElement.dataset.theme = effectiveTheme(name);
