@@ -207,8 +207,7 @@ npm run build:all
 │   ├── installer.nsi       NSIS script for the Windows installer
 │   └── install_ffmpeg.ps1  Run by the installer if ffmpeg isn't found —
 │                           downloads and extracts to <install>\ffmpeg\
-├── package.json            Scripts: `start`, `build`
-├── Run Compressor.vbs      Console-less dev launcher (no install needed)
+├── package.json            Scripts: `start`, `build:win`, `build:linux`, `build:all`
 └── README.md
 ```
 

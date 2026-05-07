@@ -1,7 +1,7 @@
 {
   "name": "discord-video-compressor",
   "productName": "Discord Video Compressor",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Compress videos under Discord upload limits",
   "main": "main.js",
   "author": "Neko",

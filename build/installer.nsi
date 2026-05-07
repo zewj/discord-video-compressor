@@ -2,7 +2,7 @@
 ; Run via: makensis installer.nsi   (after `npm run build`)
 
 !define APP_NAME       "Discord Video Compressor"
-!define APP_VERSION    "1.4.0"
+!define APP_VERSION    "1.4.1"
 !define APP_PUBLISHER  "Neko"
 !define APP_EXE        "Discord Video Compressor.exe"
 !define APP_DIR_NAME   "DiscordVideoCompressor"

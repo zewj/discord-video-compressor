@@ -391,6 +391,7 @@ function registerIpc(win) {
     encoders: availableEncoders,
     appVersion: APP_VERSION,
     isDarkOS: nativeTheme.shouldUseDarkColors,
+    platform: process.platform,
   }));
 
   ipcMain.handle('media:probe', async (_e, p) => {

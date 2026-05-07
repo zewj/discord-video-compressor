@@ -467,8 +467,7 @@ async function startCompress() {
 
   const env = await window.api.checkEnv();
   if (!env.ffmpeg || !env.ffprobe) {
-    return toast('error', 'ffmpeg not found',
-      'Install ffmpeg or place it at C:\\ffmpeg\\bin.');
+    return toast('error', 'ffmpeg not found', ffmpegHint(env.platform));
   }
 
   const trimStart = parseTime(els.trimStart.value) || 0;
@@ -592,6 +591,17 @@ window.addEventListener('keydown', (e) => {
 });
 
 // ---------- Encoders + initial env ----------
+// Platform-aware install hint for the "ffmpeg missing" toast.
+function ffmpegHint(platform) {
+  if (platform === 'linux') {
+    return 'Install ffmpeg via your package manager: sudo apt install ffmpeg (or dnf / pacman).';
+  }
+  if (platform === 'darwin') {
+    return 'Install ffmpeg via Homebrew: brew install ffmpeg.';
+  }
+  return 'Install ffmpeg from ffmpeg.org, or place it at C:\\ffmpeg\\bin.';
+}
+
 window.api.onEncoders(populateCodecs);
 (async () => {
   const env = await window.api.checkEnv();
@@ -600,7 +610,7 @@ window.api.onEncoders(populateCodecs);
   if (document.documentElement.dataset.themeChoice === 'auto') applyTheme('auto');
 
   if (!env.ffmpeg || !env.ffprobe) {
-    toast('error', 'ffmpeg missing', 'Install ffmpeg, then restart the app.');
+    toast('error', 'ffmpeg missing', ffmpegHint(env.platform));
   } else if (env.encoders && env.encoders.length) {
     populateCodecs(env.encoders);
   } else {
