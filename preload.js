@@ -12,11 +12,24 @@ contextBridge.exposeInMainWorld('api', {
   openExternal: (url) => ipcRenderer.invoke('shell:open', url),
   resolveAvailable: (p) => ipcRenderer.invoke('fs:resolveAvailable', p),
   checkUpdate: () => ipcRenderer.invoke('update:check'),
+  setStatsEnabled: (on) => ipcRenderer.invoke('stats:setEnabled', on),
+  copyFile: (p) => ipcRenderer.invoke('clipboard:copyFile', p),
 
   // For drag-drop support: in modern Electron the renderer can't read
   // file.path directly; webUtils.getPathForFile is the supported way to
   // resolve a dropped File to its filesystem path.
   pathForFile: (file) => webUtils.getPathForFile(file),
+
+  // Build a dvc-media:// URL the renderer's <video> tag can load. The
+  // protocol handler in main.js maps this to the underlying file:// URL.
+  mediaUrl: (p) => {
+    if (!p) return '';
+    // encodeURI handles spaces and unicode; we manually re-encode '#' and
+    // '?' since they have URL meaning even in path components.
+    const encoded = encodeURI(p.replace(/\\/g, '/'))
+      .replace(/#/g, '%23').replace(/\?/g, '%3F');
+    return 'dvc-media:///' + encoded.replace(/^\//, '');
+  },
 
   onProgress: (cb) => {
     const handler = (_e, data) => cb(data);

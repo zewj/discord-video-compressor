@@ -1,0 +1,102 @@
+# Builds an AppImage on tag push (e.g. v1.6.0) and attaches it to the
+# corresponding GitHub Release. Runs on a real Linux runner so we can use
+# appimagetool natively — way easier than cross-building from Windows.
+
+name: AppImage
+
+on:
+  push:
+    tags: [ 'v*' ]
+  # Allow re-running manually if a release exists but the AppImage failed.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to attach the AppImage to (e.g. v1.6.0)'
+        required: true
+
+permissions:
+  contents: write   # needed for softprops/action-gh-release to upload
+
+jobs:
+  appimage:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Package Linux build
+        run: npm run build:linux
+
+      - name: Stage AppDir
+        env:
+          APP_VERSION: ${{ github.ref_name || inputs.tag }}
+        run: |
+          set -e
+          BUILD_DIR="dist/discord-video-compressor-linux-x64"
+          APPDIR="dist/AppDir"
+
+          rm -rf "$APPDIR"
+          mkdir -p "$APPDIR/usr/bin"
+          mkdir -p "$APPDIR/usr/share/applications"
+          mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
+
+          # Copy the entire packaged folder under usr/bin/ so resources/ etc.
+          # stay co-located with the binary.
+          cp -r "$BUILD_DIR/." "$APPDIR/usr/bin/"
+
+          # Icon (required by AppImage).
+          cp build/icon-256.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/discord-video-compressor.png"
+          cp build/icon-256.png "$APPDIR/discord-video-compressor.png"
+          cp build/icon-256.png "$APPDIR/.DirIcon"
+
+          # Desktop entry.
+          cat > "$APPDIR/usr/share/applications/discord-video-compressor.desktop" <<EOF
+          [Desktop Entry]
+          Type=Application
+          Name=Discord Video Compressor
+          Exec=discord-video-compressor
+          Icon=discord-video-compressor
+          Categories=AudioVideo;Video;
+          Terminal=false
+          EOF
+          cp "$APPDIR/usr/share/applications/discord-video-compressor.desktop" "$APPDIR/discord-video-compressor.desktop"
+
+          # AppRun entrypoint — the script appimagetool invokes.
+          cat > "$APPDIR/AppRun" <<'EOF'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          export PATH="$HERE/usr/bin:$PATH"
+          exec "$HERE/usr/bin/discord-video-compressor" "$@"
+          EOF
+          chmod +x "$APPDIR/AppRun"
+
+      - name: Build AppImage
+        run: |
+          set -e
+          # appimagetool wants FUSE; on GH runners we fall back to extract+run.
+          curl -L -o appimagetool \
+            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          ./appimagetool --appimage-extract
+          mkdir -p dist
+          ARCH=x86_64 ./squashfs-root/AppRun \
+            dist/AppDir \
+            "dist/DiscordVideoCompressor-${{ github.ref_name }}-x86_64.AppImage"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/DiscordVideoCompressor-*.AppImage
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          fail_on_unmatched_files: true

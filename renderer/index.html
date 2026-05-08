@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+    content="default-src 'self'; media-src 'self' dvc-media:; img-src 'self' data: dvc-media:; style-src 'self' 'unsafe-inline'; script-src 'self';" />
   <title>Discord Video Compressor</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -60,29 +60,25 @@
       <!-- ===== COMPRESS TAB ===== -->
       <section class="tab-panel active" data-tab="compress">
         <div class="row">
-          <label class="field" for="input-path">
-            <span class="field-label">Input video <span class="dim-hint">(or drop a file anywhere)</span></span>
+          <div class="field">
+            <span class="field-label">
+              Input <span class="dim-hint">(or drop files anywhere — multiple OK)</span>
+              <span class="queue-count" id="queue-count" hidden>0</span>
+            </span>
             <div class="picker">
-              <input id="input-path" type="text" placeholder="Choose a video file..." readonly />
-              <button class="btn btn-ghost" id="pick-input">Browse</button>
+              <button class="btn btn-ghost" id="pick-input">Add file...</button>
+              <button class="btn btn-ghost btn-tiny" id="clear-queue" disabled>Clear queue</button>
             </div>
-            <div class="source-info" id="source-info" hidden>
-              <span id="src-duration">--</span>
-              <span class="dot">·</span>
-              <span id="src-resolution">--</span>
-              <span class="dot">·</span>
-              <span id="src-codec">--</span>
-              <span class="dot">·</span>
-              <span id="src-size">--</span>
+
+            <ul class="queue-list" id="queue-list" hidden></ul>
+
+            <div class="empty-hint" id="empty-hint">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 4v12"/><path d="M6 10l6-6 6 6"/><rect x="4" y="18" width="16" height="2" rx="1"/>
+              </svg>
+              <span>Drop videos here, or click <strong>Add file</strong> above.</span>
             </div>
-            <div class="output-line">
-              <span class="output-arrow" aria-hidden="true">↳</span>
-              <span class="dim-hint">Save to</span>
-              <span class="output-display" id="output-display" title="Click to change">—</span>
-              <input id="output-path" type="hidden" />
-              <button type="button" class="btn-link" id="pick-output">Change</button>
-            </div>
-          </label>
+          </div>
         </div>
 
         <div class="row">
@@ -102,6 +98,14 @@
                 <div class="tier-title">Nitro Basic</div>
                 <div class="tier-size">50 MB</div>
                 <div class="tier-hint">Basic subscription</div>
+              </div>
+            </label>
+            <label class="tier" data-tier="boost">
+              <input type="radio" name="tier" value="boost" />
+              <div class="tier-card">
+                <div class="tier-title">Server Boost</div>
+                <div class="tier-size">100 MB</div>
+                <div class="tier-hint">Boost level 3 servers</div>
               </div>
             </label>
             <label class="tier" data-tier="nitro">
@@ -152,9 +156,10 @@
             <span class="opt-label">Mode</span>
             <div class="seg" role="radiogroup" aria-label="Encoding mode">
               <button type="button" class="seg-btn" data-mode="twopass">Two-pass</button>
-              <button type="button" class="seg-btn active" data-mode="fast">Fast (1-pass)</button>
+              <button type="button" class="seg-btn active" data-mode="fast">Fast</button>
+              <button type="button" class="seg-btn" data-mode="crf">Quality</button>
             </div>
-            <span class="opt-hint">Two-pass = more accurate size; Fast = quicker</span>
+            <span class="opt-hint" id="mode-hint">Two-pass = accurate size · Fast = quick · Quality = CRF</span>
           </label>
 
           <label class="opt opt-wide">
@@ -164,21 +169,56 @@
               <button type="button" class="seg-btn active" data-preset="balanced">Balanced</button>
               <button type="button" class="seg-btn" data-preset="quality">Max quality</button>
             </div>
-            <span class="opt-hint">Slower presets = better quality at the same bitrate</span>
+            <span class="opt-hint">Slower presets = better quality at the same bitrate / CRF</span>
           </label>
+
+          <div class="opt opt-wide" id="crf-row" hidden>
+            <span class="opt-label">CRF quality
+              <span class="dim-hint">(Quality mode only)</span>
+            </span>
+            <div class="slider-row">
+              <input type="range" id="crf-slider" class="slider"
+                     min="0" max="100" step="1" value="60" />
+              <div class="slider-value">
+                <span id="crf-value">60</span>
+                <span class="unit">%</span>
+              </div>
+            </div>
+            <span class="opt-hint">100 = visually lossless · file size will be whatever it is</span>
+          </div>
 
           <div class="opt opt-wide">
             <span class="opt-label">Trim <span class="dim-hint">(optional)</span></span>
+
+            <div class="trim-preview" id="trim-preview" hidden>
+              <video id="trim-video" preload="metadata" muted playsinline></video>
+              <div class="trim-overlay">
+                <button type="button" class="trim-play" id="trim-play" aria-label="Play / pause">
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
+                    <path id="trim-play-icon" d="M8 5v14l11-7z"/>
+                  </svg>
+                </button>
+                <span class="trim-time" id="trim-currenttime">0:00</span>
+              </div>
+
+              <div class="trim-track" id="trim-track">
+                <div class="trim-range" id="trim-range"></div>
+                <div class="trim-playhead" id="trim-playhead"></div>
+                <div class="trim-handle trim-handle-start" id="trim-handle-start" data-side="start" tabindex="0" aria-label="Trim start"></div>
+                <div class="trim-handle trim-handle-end" id="trim-handle-end" data-side="end" tabindex="0" aria-label="Trim end"></div>
+              </div>
+            </div>
+
             <div class="trim-row">
               <input id="trim-start" class="input-time" placeholder="0:00" />
               <span class="dim-hint">to</span>
               <input id="trim-end" class="input-time" placeholder="end" />
               <button type="button" class="btn btn-ghost btn-tiny" id="trim-clear">Clear</button>
             </div>
-            <span class="opt-hint" id="trim-hint">--</span>
+            <span class="opt-hint" id="trim-hint">Pick a video to enable trim.</span>
           </div>
 
-          <label class="opt opt-wide">
+          <label class="opt">
             <span class="opt-label">Audio</span>
             <label class="check">
               <input type="checkbox" id="mute-audio" />
@@ -186,6 +226,16 @@
               <span>Strip audio (max video quality)</span>
             </label>
             <span class="opt-hint">All bitrate goes to video. Useful for very short clips.</span>
+          </label>
+
+          <label class="opt">
+            <span class="opt-label">Subtitles</span>
+            <label class="check">
+              <input type="checkbox" id="burn-subs" />
+              <span class="check-box" aria-hidden="true"></span>
+              <span>Burn in subtitles</span>
+            </label>
+            <span class="opt-hint" id="subs-hint">Reads first subtitle stream from the source.</span>
           </label>
         </div>
       </section>
@@ -265,7 +315,7 @@
           <path d="M8 56h48"/>
         </svg>
       </div>
-      <div class="drop-title">Drop video to compress</div>
+      <div class="drop-title">Drop videos to queue</div>
     </div>
   </div>
 

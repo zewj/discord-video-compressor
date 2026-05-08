@@ -1,11 +1,11 @@
 const TIERS = {
   free:   { limitMb: 10,  safetyMb: 0.5, audioKbps: 64  },
   basic:  { limitMb: 50,  safetyMb: 1.0, audioKbps: 96  },
+  boost:  { limitMb: 100, safetyMb: 1.5, audioKbps: 128 },
   nitro:  { limitMb: 500, safetyMb: 5.0, audioKbps: 128 },
   custom: { limitMb: null, safetyMb: 0.5, audioKbps: 96 },
 };
 
-// Friendly labels for each codec.
 const CODEC_LABELS = {
   libx264:      'CPU H.264 (libx264)',
   libx265:      'CPU HEVC / H.265 (libx265)',
@@ -24,7 +24,6 @@ const CODEC_LABELS = {
   'libaom-av1': 'CPU AV1 (libaom — slow)',
   'libvpx-vp9': 'CPU VP9 (libvpx) — WebM',
 };
-// H.264 first (most compatible). AV1 / VP9 only if the user explicitly picks.
 const CODEC_PRIORITY = [
   'h264_nvenc', 'h264_qsv', 'h264_amf', 'h264_vaapi',
   'libx264',
@@ -35,22 +34,22 @@ const CODEC_PRIORITY = [
   'libvpx-vp9',
 ];
 
-// Mirror of the main-process predicates so the renderer can disable the
-// Two-pass button immediately on codec change without an extra round-trip.
 const CPU_CODECS = ['libx264','libx265','libsvtav1','libaom-av1','libvpx-vp9'];
 function isCpuCodec(c) { return CPU_CODECS.includes(c); }
 function containerFor(c) { return c === 'libvpx-vp9' ? 'webm' : 'mp4'; }
 
 const els = {
-  inputPath: document.getElementById('input-path'),
-  outputPath: document.getElementById('output-path'),
-  outputDisplay: document.getElementById('output-display'),
   pickInput: document.getElementById('pick-input'),
-  pickOutput: document.getElementById('pick-output'),
+  clearQueue: document.getElementById('clear-queue'),
+  queueList: document.getElementById('queue-list'),
+  queueCount: document.getElementById('queue-count'),
+  emptyHint: document.getElementById('empty-hint'),
+
   customMb: document.getElementById('custom-mb'),
   customMbSlider: document.getElementById('custom-mb-slider'),
   customMbRow: document.getElementById('custom-mb-row'),
   customTierDisplay: document.getElementById('custom-tier-display'),
+
   startBtn: document.getElementById('start-btn'),
   cancelBtn: document.getElementById('cancel-btn'),
   exportLogBtn: document.getElementById('export-log-btn'),
@@ -61,19 +60,30 @@ const els = {
   toasts: document.getElementById('toasts'),
   versionTag: document.getElementById('version-tag'),
 
-  sourceInfo: document.getElementById('source-info'),
-  srcDuration: document.getElementById('src-duration'),
-  srcResolution: document.getElementById('src-resolution'),
-  srcCodec: document.getElementById('src-codec'),
-  srcSize: document.getElementById('src-size'),
-
   codecSelect: document.getElementById('codec-select'),
   codecHint: document.getElementById('codec-hint'),
+  modeHint: document.getElementById('mode-hint'),
   trimStart: document.getElementById('trim-start'),
   trimEnd: document.getElementById('trim-end'),
   trimClear: document.getElementById('trim-clear'),
   trimHint: document.getElementById('trim-hint'),
   muteAudio: document.getElementById('mute-audio'),
+  burnSubs: document.getElementById('burn-subs'),
+  subsHint: document.getElementById('subs-hint'),
+  crfRow: document.getElementById('crf-row'),
+  crfSlider: document.getElementById('crf-slider'),
+  crfValue: document.getElementById('crf-value'),
+
+  trimPreview: document.getElementById('trim-preview'),
+  trimVideo: document.getElementById('trim-video'),
+  trimPlay: document.getElementById('trim-play'),
+  trimPlayIcon: document.getElementById('trim-play-icon'),
+  trimCurrentTime: document.getElementById('trim-currenttime'),
+  trimTrack: document.getElementById('trim-track'),
+  trimRange: document.getElementById('trim-range'),
+  trimPlayhead: document.getElementById('trim-playhead'),
+  trimHandleStart: document.getElementById('trim-handle-start'),
+  trimHandleEnd: document.getElementById('trim-handle-end'),
 
   dropOverlay: document.getElementById('drop-overlay'),
 };
@@ -83,12 +93,10 @@ const TAB_KEY = 'dvc.tab';
 const tabButtons = document.querySelectorAll('.tab');
 const tabPanels = document.querySelectorAll('.tab-panel');
 const tabIndicator = document.querySelector('.tab-indicator');
+let activeTabName = 'compress';
 
 function moveIndicatorTo(btn) {
   if (!btn || !tabIndicator) return;
-  // offsetLeft/Width are relative to the .tabs container (its closest
-  // positioned ancestor), which is what the indicator is absolutely
-  // positioned within.
   tabIndicator.style.transform = `translateX(${btn.offsetLeft}px)`;
   tabIndicator.style.width = `${btn.offsetWidth}px`;
 }
@@ -106,29 +114,21 @@ function activateTab(name) {
     p.hidden = !on;
     p.classList.toggle('active', on);
   });
-  if (activeBtn) {
-    // Restart the panel entrance animation by re-flowing.
-    requestAnimationFrame(() => moveIndicatorTo(activeBtn));
+  if (activeBtn) requestAnimationFrame(() => moveIndicatorTo(activeBtn));
+  activeTabName = name;
+  // Pause stats sampling unless the System tab is in view.
+  if (window.api && window.api.setStatsEnabled) {
+    window.api.setStatsEnabled(name === 'system');
   }
   try { localStorage.setItem(TAB_KEY, name); } catch (_) {}
 }
 
-tabButtons.forEach(b => {
-  b.addEventListener('click', () => activateTab(b.dataset.tab));
-});
-
-// Recompute the indicator's geometry on resize (font-load shifts, etc.).
-window.addEventListener('resize', () => {
-  const active = document.querySelector('.tab.active');
-  moveIndicatorTo(active);
-});
-
-// Restore last-used tab on launch; default to Compress.
+tabButtons.forEach(b => b.addEventListener('click', () => activateTab(b.dataset.tab)));
+window.addEventListener('resize', () => moveIndicatorTo(document.querySelector('.tab.active')));
 const initialTab = (() => {
   try { return localStorage.getItem(TAB_KEY) || 'compress'; }
   catch { return 'compress'; }
 })();
-// Defer one frame so the layout has measured.
 requestAnimationFrame(() => activateTab(initialTab));
 
 // ---------- Theme handling ----------
@@ -137,9 +137,6 @@ const themeButtons = document.querySelectorAll('.theme-btn');
 let osIsDark = true;
 
 function effectiveTheme(name) {
-  // Auto: dark OS → neutral 'dark' palette (near-black, zinc, soft violet
-  // accent), light OS → 'light'. Distinct from any other named theme so
-  // picking Auto and any specific theme are never the same thing.
   return name === 'auto' ? (osIsDark ? 'dark' : 'light') : name;
 }
 function applyTheme(name) {
@@ -198,100 +195,200 @@ function toast(kind, title, body, action) {
   }, ttl);
 }
 
-// ---------- File pickers + auto output ----------
-function setOutputPath(p) {
-  els.outputPath.value = p || '';
-  if (!p) {
-    els.outputDisplay.textContent = '—';
-    els.outputDisplay.title = '';
-  } else {
-    // Show only the basename; full path lives in the title tooltip.
-    const slash = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'));
-    els.outputDisplay.textContent = slash >= 0 ? p.slice(slash + 1) : p;
-    els.outputDisplay.title = p;
-  }
-}
+// ===========================================================================
+// QUEUE
+// ===========================================================================
 
-async function setInputPath(p) {
-  if (!p) return;
-  els.inputPath.value = p;
+let queue = [];           // [{ id, input, output, status, progress, sizeMb?, error?, info? }]
+let nextId = 1;
+let runningId = null;     // id of the currently-encoding item, or null
+let queueCancelled = false;
+
+function basename(p) {
+  const slash = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'));
+  return slash >= 0 ? p.slice(slash + 1) : p;
+}
+function stem(p) {
   const dot = p.lastIndexOf('.');
-  const stem = dot >= 0 ? p.slice(0, dot) : p;
-  const desired = stem + '_discord.mp4';
-  // Auto-increment if the suggested target already exists.
-  setOutputPath(await window.api.resolveAvailable(desired));
-  // Show source info.
-  showSourceInfo(p);
+  return dot >= 0 ? p.slice(0, dot) : p;
 }
 
-async function showSourceInfo(p) {
-  els.sourceInfo.hidden = false;
-  els.srcDuration.textContent   = '...';
-  els.srcResolution.textContent = '...';
-  els.srcCodec.textContent      = '...';
-  els.srcSize.textContent       = '...';
-  const info = await window.api.probeMedia(p);
-  if (!info || info.error) {
-    els.sourceInfo.hidden = true;
-    if (info && info.error) toast('error', "Can't read video", info.error);
-    return;
+async function defaultOutputFor(inputPath, codec) {
+  const ext = '.' + containerFor(codec || els.codecSelect.value || 'libx264');
+  const desired = stem(inputPath) + '_discord' + ext;
+  // resolveAvailable bumps "(1)", "(2)" etc. if there's a collision.
+  return await window.api.resolveAvailable(desired);
+}
+
+async function enqueue(paths) {
+  for (const p of paths) {
+    const item = {
+      id: nextId++,
+      input: p,
+      output: await defaultOutputFor(p),
+      status: 'queued',
+      progress: 0,
+    };
+    queue.push(item);
+    // Fire off a probe in the background so we know duration/size before
+    // the user even hits Compress.
+    window.api.probeMedia(p).then(info => {
+      if (info && !info.error) {
+        item.info = info;
+        renderQueue();
+        // The first item's metadata seeds the trim preview.
+        if (queue[0] && queue[0].id === item.id) loadTrimPreview(item);
+      }
+    });
   }
-  els.srcDuration.textContent   = fmtDuration(info.duration);
-  els.srcResolution.textContent = `${info.width}×${info.height}`;
-  els.srcCodec.textContent      = (info.videoCodec || '?').toUpperCase() +
-                                  (info.hasAudio ? ` + ${info.audioCodec}` : ' (no audio)');
-  els.srcSize.textContent       = fmtBytes(info.bytes);
-  // Cache duration for trim hint.
-  document.body.dataset.srcDuration = String(info.duration);
-  updateTrimHint();
+  renderQueue();
 }
 
+function removeQueueItem(id) {
+  if (id === runningId) return; // can't remove the running one; cancel instead
+  queue = queue.filter(q => q.id !== id);
+  renderQueue();
+}
+
+function clearQueue() {
+  if (runningId !== null) return;
+  queue = [];
+  renderQueue();
+  unloadTrimPreview();
+}
+
+function renderQueue() {
+  els.queueList.innerHTML = '';
+  els.queueList.hidden = queue.length === 0;
+  els.emptyHint.hidden = queue.length > 0;
+  els.clearQueue.disabled = queue.length === 0 || runningId !== null;
+  els.queueCount.hidden = queue.length === 0;
+  els.queueCount.textContent = String(queue.length);
+
+  // Update the start button label.
+  const queued = queue.filter(q => q.status === 'queued').length;
+  if (queued > 1) {
+    document.querySelector('#start-btn .btn-label').textContent = `Compress queue (${queued})`;
+  } else {
+    document.querySelector('#start-btn .btn-label').textContent = 'Compress';
+  }
+
+  for (const item of queue) {
+    const li = document.createElement('li');
+    li.className = 'queue-item';
+    if (item.status === 'encoding') li.classList.add('is-active');
+    if (item.status === 'done')     li.classList.add('is-done');
+    if (item.status === 'failed')   li.classList.add('is-failed');
+
+    const icon = document.createElement('div');
+    icon.className = 'q-icon';
+    icon.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+
+    const name = document.createElement('div');
+    name.className = 'q-name';
+    name.textContent = basename(item.input);
+    name.title = item.input;
+
+    const status = document.createElement('div');
+    status.className = 'q-status';
+    if (item.status === 'queued')   status.textContent = item.info ? `${fmtDuration(item.info.duration)} · ${(item.info.bytes / 1024 / 1024).toFixed(1)} MB` : 'queued';
+    if (item.status === 'encoding') status.textContent = `encoding ${item.progress.toFixed(0)}%`;
+    if (item.status === 'done')     status.textContent = `✓ ${item.sizeMb ? item.sizeMb.toFixed(2) + ' MB' : 'done'}`;
+    if (item.status === 'failed')   status.textContent = `✗ ${item.error || 'failed'}`;
+
+    const actions = document.createElement('div');
+    actions.className = 'q-actions';
+
+    if (item.status === 'done') {
+      const showBtn = document.createElement('button');
+      showBtn.textContent = 'Folder';
+      showBtn.addEventListener('click', () => window.api.revealInFolder(item.output));
+      actions.appendChild(showBtn);
+      const copyBtn = document.createElement('button');
+      copyBtn.textContent = 'Copy';
+      copyBtn.addEventListener('click', () => copyOutputToClipboard(item.output));
+      actions.appendChild(copyBtn);
+    }
+    if (item.status !== 'encoding') {
+      const removeBtn = document.createElement('button');
+      removeBtn.textContent = '✕';
+      removeBtn.addEventListener('click', () => removeQueueItem(item.id));
+      actions.appendChild(removeBtn);
+    }
+
+    li.appendChild(icon);
+    li.appendChild(name);
+    li.appendChild(status);
+    li.appendChild(actions);
+
+    if (item.status === 'encoding') {
+      const bar = document.createElement('div');
+      bar.className = 'q-progress';
+      const fill = document.createElement('div');
+      fill.className = 'q-progress-fill';
+      fill.style.width = `${item.progress}%`;
+      bar.appendChild(fill);
+      li.appendChild(bar);
+    }
+
+    els.queueList.appendChild(li);
+  }
+}
+
+async function copyOutputToClipboard(path) {
+  const r = await window.api.copyFile(path);
+  if (r && r.ok) {
+    if (r.mode === 'file') {
+      toast('success', 'Copied to clipboard', 'Paste into Discord with Ctrl+V.');
+    } else {
+      toast('info', 'Copied path as text', "Couldn't copy file directly — path is on the clipboard instead.");
+    }
+  } else {
+    toast('error', 'Copy failed', (r && r.error) || 'Unknown error.');
+  }
+}
+
+// ---------- File pickers ----------
 els.pickInput.addEventListener('click', async () => {
   const p = await window.api.pickInput();
-  if (p) setInputPath(p);
+  if (p) await enqueue([p]);
 });
-els.pickOutput.addEventListener('click', async () => {
-  const suggested = els.outputPath.value || 'output.mp4';
-  const p = await window.api.pickOutput(suggested);
-  if (p) setOutputPath(p);
-});
-// Clicking the displayed filename opens the same dialog.
-els.outputDisplay.addEventListener('click', () => els.pickOutput.click());
+els.clearQueue.addEventListener('click', clearQueue);
 
-// ---------- Drag & drop ----------
+// Drag & drop: works for one or many files.
 let dragDepth = 0;
-function isFileDrag(e) {
-  return Array.from(e.dataTransfer?.types || []).includes('Files');
-}
+function isFileDrag(e) { return Array.from(e.dataTransfer?.types || []).includes('Files'); }
 window.addEventListener('dragenter', (e) => {
   if (!isFileDrag(e)) return;
   e.preventDefault();
   dragDepth++;
   els.dropOverlay.classList.add('visible');
 });
-window.addEventListener('dragover', (e) => {
-  if (!isFileDrag(e)) return;
-  e.preventDefault();
-});
+window.addEventListener('dragover',  (e) => { if (isFileDrag(e)) e.preventDefault(); });
 window.addEventListener('dragleave', (e) => {
   if (!isFileDrag(e)) return;
   dragDepth = Math.max(0, dragDepth - 1);
   if (dragDepth === 0) els.dropOverlay.classList.remove('visible');
 });
-window.addEventListener('drop', (e) => {
+window.addEventListener('drop', async (e) => {
   e.preventDefault();
   dragDepth = 0;
   els.dropOverlay.classList.remove('visible');
   const files = Array.from(e.dataTransfer?.files || []);
   if (!files.length) return;
-  const path = window.api.pathForFile(files[0]);
-  if (path) setInputPath(path);
+  const paths = files.map(f => window.api.pathForFile(f)).filter(Boolean);
+  if (paths.length) await enqueue(paths);
 });
 
-// ---------- Codec dropdown ----------
+// ===========================================================================
+// CODEC / MODE / PRESET / CRF / TRIM / SUBTITLES
+// ===========================================================================
+
+let mode = 'fast';
+let presetLevel = 'balanced';
+
 function populateCodecs(encoders) {
   els.codecSelect.innerHTML = '';
-  // Keep ordering stable per CODEC_PRIORITY, only what's available.
   const ordered = CODEC_PRIORITY.filter(c => encoders.includes(c));
   for (const c of ordered) {
     const opt = document.createElement('option');
@@ -299,17 +396,18 @@ function populateCodecs(encoders) {
     opt.textContent = CODEC_LABELS[c] || c;
     els.codecSelect.appendChild(opt);
   }
-  // Restore prior choice if still available.
   const saved = localStorage.getItem('dvc.codec');
   if (saved && ordered.includes(saved)) els.codecSelect.value = saved;
   updateCodecHint();
   syncModeForCodec();
+  syncOutputsForAll();  // re-sync queue items' output extensions
 }
+
 els.codecSelect.addEventListener('change', () => {
   localStorage.setItem('dvc.codec', els.codecSelect.value);
   updateCodecHint();
   syncModeForCodec();
-  syncOutputExtForCodec(els.codecSelect.value);
+  syncOutputsForAll();
 });
 
 function updateCodecHint() {
@@ -332,14 +430,10 @@ function updateCodecHint() {
     hint = 'AMD GPU encoder. Faster than CPU; single-pass.';
   } else if (c.includes('vaapi')) {
     hint = 'Linux VAAPI HW encoder. Single-pass; needs /dev/dri/renderD128.';
-  } else {
-    hint = '';
-  }
+  } else hint = '';
   els.codecHint.textContent = hint;
 }
 
-// HW encoders don't support two-pass cleanly. Disable the button and
-// force-switch to Fast if a HW codec is picked while Two-pass is active.
 function syncModeForCodec() {
   const c = els.codecSelect.value;
   const cpu = isCpuCodec(c);
@@ -352,27 +446,25 @@ function syncModeForCodec() {
   }
 }
 
-// Keep the displayed output filename's extension in sync with the codec's
-// container (VP9 → .webm, everything else → .mp4).
-function syncOutputExtForCodec(c) {
-  const cur = els.outputPath.value;
-  if (!cur) return;
-  const wantedExt = '.' + containerFor(c);
-  const m = cur.match(/^(.*)(\.[^.\\/]+)$/);
-  const base = m ? m[1] : cur;
-  const newPath = base + wantedExt;
-  if (newPath !== cur) setOutputPath(newPath);
+async function syncOutputsForAll() {
+  const ext = '.' + containerFor(els.codecSelect.value);
+  for (const item of queue) {
+    if (item.status !== 'queued') continue;
+    const m = item.output.match(/^(.*)(\.[^.\\/]+)$/);
+    const base = m ? m[1] : item.output;
+    item.output = base + ext;
+    item.output = await window.api.resolveAvailable(item.output);
+  }
+  renderQueue();
 }
-
-// ---------- Segmented controls (mode + preset) ----------
-let mode = 'fast';      // default to Fast for new HW-friendly behavior
-let presetLevel = 'balanced';
 
 document.querySelectorAll('.seg-btn[data-mode]').forEach(b => {
   b.addEventListener('click', () => {
+    if (b.disabled) return;
     mode = b.dataset.mode;
     document.querySelectorAll('.seg-btn[data-mode]').forEach(x =>
       x.classList.toggle('active', x === b));
+    els.crfRow.hidden = mode !== 'crf';
   });
 });
 document.querySelectorAll('.seg-btn[data-preset]').forEach(b => {
@@ -383,11 +475,15 @@ document.querySelectorAll('.seg-btn[data-preset]').forEach(b => {
   });
 });
 
+// CRF slider value display.
+els.crfSlider.addEventListener('input', () => {
+  els.crfValue.textContent = els.crfSlider.value;
+});
+
 // ---------- Trim ----------
 function parseTime(s) {
   s = (s || '').trim();
   if (!s) return null;
-  // Accept "ss", "mm:ss", "hh:mm:ss", or decimals.
   if (/^\d+(\.\d+)?$/.test(s)) return parseFloat(s);
   const parts = s.split(':').map(p => p.trim());
   if (parts.some(p => !/^\d+(\.\d+)?$/.test(p))) return NaN;
@@ -416,6 +512,11 @@ function updateTrimHint() {
   } else {
     els.trimHint.textContent = `Trim: ${fmtDuration(dur)} (of ${fmtDuration(total)})`;
   }
+  // Mirror to visual handles.
+  if (total > 0) {
+    setHandlePct('start', Math.max(0, Math.min(1, start / total)));
+    setHandlePct('end',   Math.max(0, Math.min(1, end   / total)));
+  }
 }
 els.trimStart.addEventListener('input', updateTrimHint);
 els.trimEnd.addEventListener('input', updateTrimHint);
@@ -425,7 +526,162 @@ els.trimClear.addEventListener('click', () => {
   updateTrimHint();
 });
 
-// ---------- System resources ----------
+// ---------- Visual trim (video preview + draggable handles) ----------
+let trimDuration = 0;
+let trimStartPct = 0;
+let trimEndPct = 1;
+
+function loadTrimPreview(item) {
+  if (!item || !item.input) return;
+  const url = window.api.mediaUrl(item.input);
+  els.trimVideo.src = url;
+  els.trimPreview.hidden = false;
+  if (item.info && item.info.duration) {
+    trimDuration = item.info.duration;
+    document.body.dataset.srcDuration = String(trimDuration);
+    updateTrimHint();
+  }
+  // Reset trim handles to full clip.
+  trimStartPct = 0;
+  trimEndPct = 1;
+  setHandlePct('start', 0);
+  setHandlePct('end', 1);
+}
+function unloadTrimPreview() {
+  els.trimVideo.removeAttribute('src');
+  els.trimVideo.load();
+  els.trimPreview.hidden = true;
+}
+
+els.trimVideo.addEventListener('loadedmetadata', () => {
+  // The probe duration is canonical; only fall back to video.duration if probe
+  // didn't run for some reason (it almost always does).
+  if (!trimDuration && els.trimVideo.duration) {
+    trimDuration = els.trimVideo.duration;
+    document.body.dataset.srcDuration = String(trimDuration);
+    updateTrimHint();
+  }
+});
+
+els.trimVideo.addEventListener('timeupdate', () => {
+  if (!trimDuration) return;
+  const pct = els.trimVideo.currentTime / trimDuration;
+  els.trimPlayhead.style.left = `${pct * 100}%`;
+  els.trimCurrentTime.textContent = fmtDuration(els.trimVideo.currentTime);
+  // Loop within the trim range when playing.
+  if (els.trimVideo.currentTime >= trimEndPct * trimDuration - 0.05) {
+    els.trimVideo.currentTime = trimStartPct * trimDuration;
+  }
+});
+
+els.trimPlay.addEventListener('click', () => {
+  if (els.trimVideo.paused) {
+    if (els.trimVideo.currentTime < trimStartPct * trimDuration ||
+        els.trimVideo.currentTime > trimEndPct * trimDuration - 0.05) {
+      els.trimVideo.currentTime = trimStartPct * trimDuration;
+    }
+    els.trimVideo.play();
+    els.trimPlayIcon.setAttribute('d', 'M6 4h4v16H6zM14 4h4v16h-4z'); // pause
+  } else {
+    els.trimVideo.pause();
+    els.trimPlayIcon.setAttribute('d', 'M8 5v14l11-7z'); // play
+  }
+});
+els.trimVideo.addEventListener('pause', () => {
+  els.trimPlayIcon.setAttribute('d', 'M8 5v14l11-7z');
+});
+els.trimVideo.addEventListener('play', () => {
+  els.trimPlayIcon.setAttribute('d', 'M6 4h4v16H6zM14 4h4v16h-4z');
+});
+
+function setHandlePct(side, pct) {
+  pct = Math.max(0, Math.min(1, pct));
+  if (side === 'start') {
+    trimStartPct = Math.min(pct, trimEndPct - 0.001);
+    els.trimHandleStart.style.left = `${trimStartPct * 100}%`;
+  } else {
+    trimEndPct = Math.max(pct, trimStartPct + 0.001);
+    els.trimHandleEnd.style.left = `${trimEndPct * 100}%`;
+  }
+  els.trimRange.style.left  = `${trimStartPct * 100}%`;
+  els.trimRange.style.right = `${(1 - trimEndPct) * 100}%`;
+}
+
+function bindHandle(handle, side) {
+  let dragging = false;
+  function onPointerDown(e) {
+    dragging = true;
+    handle.classList.add('dragging');
+    handle.setPointerCapture(e.pointerId);
+  }
+  function onPointerMove(e) {
+    if (!dragging) return;
+    const rect = els.trimTrack.getBoundingClientRect();
+    const pct = (e.clientX - rect.left) / rect.width;
+    setHandlePct(side, pct);
+    if (trimDuration > 0) {
+      const seconds = (side === 'start' ? trimStartPct : trimEndPct) * trimDuration;
+      const fld = side === 'start' ? els.trimStart : els.trimEnd;
+      fld.value = fmtDuration(seconds);
+      // Scrub the video to the active handle.
+      els.trimVideo.currentTime = seconds;
+    }
+    updateTrimHint();
+  }
+  function onPointerUp(e) {
+    dragging = false;
+    handle.classList.remove('dragging');
+    try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
+  }
+  handle.addEventListener('pointerdown', onPointerDown);
+  handle.addEventListener('pointermove', onPointerMove);
+  handle.addEventListener('pointerup', onPointerUp);
+  handle.addEventListener('pointercancel', onPointerUp);
+}
+bindHandle(els.trimHandleStart, 'start');
+bindHandle(els.trimHandleEnd, 'end');
+
+// Click on the track (anywhere not on a handle) seeks the video.
+els.trimTrack.addEventListener('click', (e) => {
+  if (e.target.classList.contains('trim-handle')) return;
+  if (!trimDuration) return;
+  const rect = els.trimTrack.getBoundingClientRect();
+  const pct = (e.clientX - rect.left) / rect.width;
+  els.trimVideo.currentTime = Math.max(0, Math.min(trimDuration, pct * trimDuration));
+});
+
+// ---------- Custom MB ----------
+function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
+function setCustomMb(value, source) {
+  let n = parseFloat(value);
+  if (!Number.isFinite(n) || n < 1) n = 1;
+  if (source !== 'number') els.customMb.value = String(Math.round(n * 100) / 100);
+  if (source !== 'slider') els.customMbSlider.value = String(clamp(n, 1, 500));
+  els.customTierDisplay.textContent = `${els.customMb.value} MB`;
+  const sliderPct = (clamp(n, 1, 500) - 1) / 499 * 100;
+  els.customMbSlider.style.setProperty('--filled', `${sliderPct}%`);
+}
+els.customMbSlider.addEventListener('input', () => setCustomMb(els.customMbSlider.value, 'slider'));
+els.customMb.addEventListener('input', () => setCustomMb(els.customMb.value, 'number'));
+els.customMb.addEventListener('focus', () => selectTier('custom'));
+
+function selectTier(name) {
+  const radio = document.querySelector(`input[name="tier"][value="${name}"]`);
+  if (radio) radio.checked = true;
+  syncCustomRow();
+}
+function syncCustomRow() {
+  els.customMbRow.hidden = getTier() !== 'custom';
+}
+document.querySelectorAll('input[name="tier"]').forEach(r =>
+  r.addEventListener('change', syncCustomRow));
+setCustomMb(els.customMb.value, null);
+syncCustomRow();
+
+// ===========================================================================
+// SYSTEM RESOURCES
+// ===========================================================================
+
 const RING_CIRCUM = 263.9;
 const cpuRing = document.getElementById('cpu-ring');
 const ramRing = document.getElementById('ram-ring');
@@ -482,7 +738,10 @@ window.api.onStats(({ cpuPercent, memUsed, memTotal, memPercent, cpuModel, cpuCo
   }
 });
 
-// ---------- Progress + ETA ----------
+// ===========================================================================
+// COMPRESSION FLOW (sequential queue)
+// ===========================================================================
+
 function fmtSec(s) {
   if (!Number.isFinite(s)) return '';
   const m = Math.floor(s / 60);
@@ -496,14 +755,29 @@ window.api.onProgress(({ phase, percent, currentSec, durationSec, speed }) => {
   els.phase.textContent = phase;
   let info = durationSec ? `${fmtSec(currentSec)} / ${fmtSec(durationSec)}` : '';
   if (speed && speed > 0 && durationSec) {
-    const remainingSrcSec = Math.max(0, durationSec - currentSec);
-    const eta = remainingSrcSec / speed;
+    const remaining = Math.max(0, durationSec - currentSec);
+    const eta = remaining / speed;
     if (Number.isFinite(eta) && eta > 0.5) info += `  ·  ETA ${fmtSec(eta)}  ·  ${speed.toFixed(2)}x`;
   }
   els.timeInfo.textContent = info;
+  // Mirror into the running queue item.
+  if (runningId !== null) {
+    const item = queue.find(q => q.id === runningId);
+    if (item) {
+      item.progress = percent;
+      // Lightweight DOM update — only the running item's progress fill +
+      // status text — instead of a full renderQueue() each frame.
+      const li = els.queueList.children[queue.indexOf(item)];
+      if (li) {
+        const fill = li.querySelector('.q-progress-fill');
+        if (fill) fill.style.width = `${percent}%`;
+        const status = li.querySelector('.q-status');
+        if (status) status.textContent = `encoding ${percent.toFixed(0)}%`;
+      }
+    }
+  }
 });
 
-// ---------- Start / cancel ----------
 function setBusy(busy) {
   els.startBtn.disabled = busy;
   els.startBtn.classList.toggle('is-loading', busy);
@@ -512,22 +786,24 @@ function setBusy(busy) {
 }
 
 async function startCompress() {
-  const input = els.inputPath.value.trim();
-  let output = els.outputPath.value.trim();
-  if (!input) return toast('error', 'Missing input', 'Pick a video first.');
-  if (!output) return toast('error', 'Missing output', 'Choose where to save.');
-  const targetMb = resolveTargetMb();
-  if (targetMb === null) return;
+  if (runningId !== null) return; // already running
 
-  // Auto-increment output filename if it would overwrite something.
-  output = await window.api.resolveAvailable(output);
-  setOutputPath(output);
+  const queued = queue.filter(q => q.status === 'queued');
+  if (!queued.length) {
+    return toast('error', 'Queue is empty', 'Add at least one video.');
+  }
+
+  // Validate tier / target only once for the batch — they apply uniformly.
+  const targetMb = mode === 'crf' ? null : resolveTargetMb();
+  if (mode !== 'crf' && targetMb === null) return;
 
   const env = await window.api.checkEnv();
   if (!env.ffmpeg || !env.ffprobe) {
     return toast('error', 'ffmpeg not found', ffmpegHint(env.platform));
   }
 
+  // Validate trim once (applied to every item in the queue — usually only
+  // makes sense for a single-item queue, but it works for all).
   const trimStart = parseTime(els.trimStart.value) || 0;
   const trimEnd = parseTime(els.trimEnd.value);
   if ((els.trimStart.value && Number.isNaN(trimStart)) ||
@@ -536,89 +812,79 @@ async function startCompress() {
   }
 
   setBusy(true);
-  els.progressFill.style.width = '0%';
-  els.phase.textContent = 'Probing...';
-  els.timeInfo.textContent = '';
+  queueCancelled = false;
 
-  const audioKbps = TIERS[getTier()].audioKbps;
-  const result = await window.api.startCompress({
-    input, output, targetMb, audioKbps,
-    codec: els.codecSelect.value || 'libx264',
-    presetLevel,
-    mode,
-    trimStart,
-    trimEnd: Number.isFinite(trimEnd) ? trimEnd : null,
-    removeAudio: els.muteAudio.checked,
-  });
-  setBusy(false);
-
-  if (result.ok) {
-    els.progressFill.style.width = '100%';
-    els.phase.textContent = 'Done';
-    toast('success', 'Compressed!',
-      `Final size: ${result.sizeMb.toFixed(2)} MB`,
-      { label: 'Show in folder',
-        onClick: () => window.api.revealInFolder(result.output) });
-  } else {
-    els.phase.textContent = 'Ready';
-    if (result.error !== 'Cancelled') {
-      toast('error', 'Failed', result.error);
-    } else {
-      toast('error', 'Cancelled', 'Compression cancelled.');
+  let okCount = 0, failCount = 0;
+  for (const item of queued) {
+    if (queueCancelled) {
+      item.status = 'failed';
+      item.error = 'Cancelled before start';
+      continue;
     }
+    runningId = item.id;
+    item.status = 'encoding';
+    item.progress = 0;
+    renderQueue();
+    els.phase.textContent = `${basename(item.input)} — probing...`;
+    els.timeInfo.textContent = '';
+    els.progressFill.style.width = '0%';
+
+    const audioKbps = TIERS[getTier()].audioKbps;
+    const result = await window.api.startCompress({
+      input: item.input,
+      output: item.output,
+      targetMb,
+      audioKbps,
+      codec: els.codecSelect.value || 'libx264',
+      presetLevel,
+      mode,
+      trimStart,
+      trimEnd: Number.isFinite(trimEnd) ? trimEnd : null,
+      removeAudio: els.muteAudio.checked,
+      crf: parseInt(els.crfSlider.value, 10),
+      burnSubtitles: els.burnSubs.checked,
+    });
+
+    if (result.ok) {
+      item.status = 'done';
+      item.sizeMb = result.sizeMb;
+      item.output = result.output;
+      okCount++;
+    } else {
+      item.status = 'failed';
+      item.error = result.error || 'failed';
+      failCount++;
+      if (result.error === 'Cancelled') queueCancelled = true; // user cancelled — stop the queue
+    }
+    runningId = null;
+    renderQueue();
+  }
+
+  setBusy(false);
+  els.phase.textContent = 'Ready';
+
+  if (queue.length === 1 && okCount === 1) {
+    const only = queue[0];
+    toast('success', 'Compressed!',
+      `Final size: ${only.sizeMb.toFixed(2)} MB`,
+      { label: 'Show in folder', onClick: () => window.api.revealInFolder(only.output) });
+  } else if (okCount > 0 || failCount > 0) {
+    const kind = failCount === 0 ? 'success' : (okCount === 0 ? 'error' : 'info');
+    toast(kind, 'Queue finished', `${okCount} succeeded, ${failCount} failed.`);
   }
 }
 
 els.startBtn.addEventListener('click', startCompress);
-els.cancelBtn.addEventListener('click', () => window.api.cancelCompress());
+els.cancelBtn.addEventListener('click', () => {
+  queueCancelled = true;
+  window.api.cancelCompress();
+});
 els.exportLogBtn.addEventListener('click', async () => {
   const p = await window.api.saveLog();
   if (p) toast('success', 'Log saved', p, {
     label: 'Show in folder', onClick: () => window.api.revealInFolder(p),
   });
 });
-
-// ---------- Custom MB slider + number input sync ----------
-function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
-
-function setCustomMb(value, source) {
-  let n = parseFloat(value);
-  if (!Number.isFinite(n) || n < 1) n = 1;
-  // Number input has no upper bound (user can type higher than slider max);
-  // slider clamps to its range. Only push to slider when source != 'slider'.
-  if (source !== 'number') els.customMb.value = String(Math.round(n * 100) / 100);
-  if (source !== 'slider') els.customMbSlider.value = String(clamp(n, 1, 500));
-  els.customTierDisplay.textContent = `${els.customMb.value} MB`;
-  // Repaint slider's filled track.
-  const sliderPct = (clamp(n, 1, 500) - 1) / 499 * 100;
-  els.customMbSlider.style.setProperty('--filled', `${sliderPct}%`);
-}
-
-els.customMbSlider.addEventListener('input', () => {
-  setCustomMb(els.customMbSlider.value, 'slider');
-});
-els.customMb.addEventListener('input', () => {
-  setCustomMb(els.customMb.value, 'number');
-});
-// Typing into the number input implies "I want Custom" — auto-select it.
-els.customMb.addEventListener('focus', () => selectTier('custom'));
-
-// ---------- Tier change → toggle the Custom slider row ----------
-function selectTier(name) {
-  const radio = document.querySelector(`input[name="tier"][value="${name}"]`);
-  if (radio) radio.checked = true;
-  syncCustomRow();
-}
-function syncCustomRow() {
-  const isCustom = getTier() === 'custom';
-  els.customMbRow.hidden = !isCustom;
-}
-document.querySelectorAll('input[name="tier"]').forEach(r =>
-  r.addEventListener('change', syncCustomRow));
-
-// Initial paint of the Custom row state and slider gradient.
-setCustomMb(els.customMb.value, null);
-syncCustomRow();
 
 // ---------- Keyboard shortcuts ----------
 function isTypingTarget(t) {
@@ -628,11 +894,11 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (!els.cancelBtn.disabled) {
       e.preventDefault();
+      queueCancelled = true;
       window.api.cancelCompress();
     }
     return;
   }
-  // Ctrl+1/2/3 switch tabs even while typing in inputs.
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
     if (e.key === '1') { e.preventDefault(); activateTab('compress'); return; }
     if (e.key === '2') { e.preventDefault(); activateTab('encoding'); return; }
@@ -648,15 +914,10 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
-// ---------- Encoders + initial env ----------
-// Platform-aware install hint for the "ffmpeg missing" toast.
+// ---------- Initial environment check ----------
 function ffmpegHint(platform) {
-  if (platform === 'linux') {
-    return 'Install ffmpeg via your package manager: sudo apt install ffmpeg (or dnf / pacman).';
-  }
-  if (platform === 'darwin') {
-    return 'Install ffmpeg via Homebrew: brew install ffmpeg.';
-  }
+  if (platform === 'linux')   return 'Install ffmpeg via your package manager: sudo apt install ffmpeg (or dnf / pacman).';
+  if (platform === 'darwin')  return 'Install ffmpeg via Homebrew: brew install ffmpeg.';
   return 'Install ffmpeg from ffmpeg.org, or place it at C:\\ffmpeg\\bin.';
 }
 
@@ -675,12 +936,10 @@ window.api.onEncoders(populateCodecs);
     populateCodecs(['libx264']);
   }
 
-  // Update check (silent on failure / no update).
   const upd = await window.api.checkUpdate();
   if (upd && upd.latest) {
     toast('info', `Update available: ${upd.latest}`,
       `You're on v${upd.current}.`,
-      { label: 'Open release page',
-        onClick: () => window.api.openExternal(upd.url) });
+      { label: 'Open release page', onClick: () => window.api.openExternal(upd.url) });
   }
 })();

@@ -16,6 +16,7 @@ Pick a video, pick which Discord tier you're on, optionally trim/mute it, and th
 | ----------------- | ------- | ----------------- | ------ |
 | No Nitro          | 10 MB   | 9.5 MB            | 64 kbps |
 | Nitro Basic       | 50 MB   | 49 MB             | 96 kbps |
+| Server Boost      | 100 MB  | 98.5 MB           | 128 kbps |
 | Nitro             | 500 MB  | 495 MB            | 128 kbps |
 | Custom            | any MB  | (your value − 0.5 MB) | 96 kbps |
 
@@ -35,18 +36,25 @@ If the chosen target leaves less than ~100 kbps for video, the app refuses to en
 
 ## Features
 
+### Workflow
+- **Batch queue** — drop or pick multiple files, encode them sequentially. Each row shows live status (queued / encoding / done / failed) with per-item progress, "Folder", "Copy", and "Remove" actions.
+- **Visual trim** — select a clip and a video preview appears in the Encoding tab with a draggable timeline. Two handles set start/end; a play button loops within the trim range. Numerical mm:ss inputs still work for precision.
+- **Copy to clipboard** — paste the compressed file straight into Discord. Uses the OS file clipboard (`Set-Clipboard -Path` on Windows, `wl-copy` / `xclip` on Linux).
+
 ### Encoding
 - **Hardware acceleration** — auto-probes ffmpeg's encoder list at startup and lets you choose:
   - CPU H.264 (`libx264`) and HEVC (`libx265`)
   - NVIDIA NVENC H.264 / HEVC
   - Intel QuickSync H.264 / HEVC
   - AMD AMF H.264 / HEVC
-- **Two modes**:
-  - **Two-pass** (CPU codecs only) — most accurate target sizing
-  - **Fast** (1-pass CBR) — quicker, works with all encoders including HW
-- **Quality presets**: Fastest / Balanced / Max quality. Maps to per-encoder presets (`p1..p7` for NVENC, `veryfast..veryslow` for libx264, etc.)
-- **Trim**: start + end times in `mm:ss` / `hh:mm:ss` / decimal seconds. Bitrate is recomputed for the trimmed window.
+- **Three modes**:
+  - **Two-pass** (CPU codecs only) — most accurate target sizing.
+  - **Fast** (1-pass CBR) — quicker, works with all encoders including HW.
+  - **Quality (CRF)** — quality-driven, ignores tier as a hard cap. Slider 0–100% maps to per-codec CRF/CQ/QP. Use for "make this look as good as you can, file size is whatever."
+- **Quality presets**: Fastest / Balanced / Max quality. Maps to per-encoder presets (`p1..p7` for NVENC, `veryfast..veryslow` for libx264, `0..13` for SVT-AV1, etc.)
+- **Trim**: visual timeline with draggable handles + numerical inputs (`mm:ss` / `hh:mm:ss` / decimal seconds). Bitrate is recomputed for the trimmed window.
 - **Strip audio** checkbox — uses `-an`, reallocates the audio budget to video. Useful for very short clips.
+- **Burn in subtitles** checkbox — runs the source's first subtitle stream through libass and bakes it into the encoded video. Discord's inline preview won't render embedded subs, so burn-in is what most people actually want.
 - **Source metadata** displayed inline after picking a video: duration, resolution, codec(s), file size.
 
 ### UI / UX
@@ -113,6 +121,13 @@ To uninstall: Settings → Apps, or run `Uninstall.exe` from the install folder.
 
 ### Linux
 
+Two ways to install:
+
+**AppImage** (single file, easiest):
+1. Download `DiscordVideoCompressor-vX.Y.Z-x86_64.AppImage` from the [latest release](https://github.com/zewj/discord-video-compressor/releases/latest).
+2. `chmod +x` and run.
+
+**Tarball** (no AppRun overhead):
 1. Download `discord-video-compressor-linux-x64.tar.gz` from the [latest release](https://github.com/zewj/discord-video-compressor/releases/latest).
 2. Make sure ffmpeg is installed: `sudo apt install ffmpeg` (or your distro's equivalent).
 3. Extract and run:

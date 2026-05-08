@@ -1,8 +1,14 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, net } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, net, protocol, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
+
+// Lets the renderer's <video> element fetch local files without opening up
+// file:// + webSecurity:false. Registered before app:ready.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'dvc-media', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, bypassCSP: true } },
+]);
 
 const APP_VERSION = require('./package.json').version;
 const RELEASES_API = 'https://api.github.com/repos/zewj/discord-video-compressor/releases/latest';
@@ -121,6 +127,9 @@ function appendLog(s) {
 // ---------- compression state ----------
 let activeProcs = [];
 let cancelled = false;
+// Toggled from the renderer via 'stats:setEnabled' — turns off the 1Hz
+// system stats push when the user isn't on the System tab.
+let statsEnabled = true;
 function killActive() {
   cancelled = true;
   for (const p of activeProcs) {
@@ -214,9 +223,82 @@ function vaapiVfSuffix(codec) {
   return isVaapiCodec(codec) ? 'format=nv12,hwupload' : '';
 }
 
+// Map a 0..100 quality slider value to the encoder's quality knob.
+// 100 = highest quality (lowest CRF/QP). For each codec family we use the
+// idiomatic flag — CRF for libx264/265/aom/svt/vpx, CQ for nvenc, GQ for
+// qsv, QP for amf/vaapi.
+function qualityArgsFor(codec, quality) {
+  const q = Math.max(0, Math.min(100, Number(quality) || 0));
+  // Per-codec sane CRF range (low quality .. high quality).
+  const ranges = {
+    libx264:      { lo: 38, hi: 14, flag: '-crf' },
+    libx265:      { lo: 38, hi: 16, flag: '-crf' },
+    libsvtav1:    { lo: 50, hi: 20, flag: '-crf' },
+    'libaom-av1': { lo: 50, hi: 18, flag: '-crf' },
+    'libvpx-vp9': { lo: 50, hi: 20, flag: '-crf', extra: ['-b:v', '0'] },
+    h264_nvenc:   { lo: 38, hi: 14, flag: '-cq', extra: ['-rc', 'vbr'] },
+    hevc_nvenc:   { lo: 38, hi: 16, flag: '-cq', extra: ['-rc', 'vbr'] },
+    av1_nvenc:    { lo: 45, hi: 20, flag: '-cq', extra: ['-rc', 'vbr'] },
+    h264_qsv:     { lo: 38, hi: 14, flag: '-global_quality' },
+    hevc_qsv:     { lo: 38, hi: 16, flag: '-global_quality' },
+    av1_qsv:      { lo: 45, hi: 20, flag: '-global_quality' },
+    h264_amf:     { lo: 38, hi: 14, flag: '-qp_i', extra: ['-rc', 'cqp'] },
+    hevc_amf:     { lo: 38, hi: 16, flag: '-qp_i', extra: ['-rc', 'cqp'] },
+    av1_amf:      { lo: 45, hi: 20, flag: '-qp_i', extra: ['-rc', 'cqp'] },
+    h264_vaapi:   { lo: 38, hi: 14, flag: '-qp', extra: ['-rc_mode', 'CQP'] },
+    hevc_vaapi:   { lo: 38, hi: 16, flag: '-qp', extra: ['-rc_mode', 'CQP'] },
+  };
+  const r = ranges[codec] || ranges.libx264;
+  // Linear lerp from lo (q=0) to hi (q=100). Round to whole number; codecs
+  // expect integer CRF/QP values.
+  const v = Math.round(r.lo + (r.hi - r.lo) * (q / 100));
+  const args = [r.flag, String(v), ...(r.extra || [])];
+  return args;
+}
+
 // Common -c:v specific args, including bitrate targeting. Two-pass vs
 // single-pass branching is added by the caller because pass-1 and pass-2
 // differ on audio handling.
+// Same codec/preset structure as videoCodecArgs but for CRF mode — no
+// bitrate block, just preset + quality flag.
+function videoCodecArgsCRF(codec, presetLevel, quality) {
+  const args = ['-c:v', codec];
+  const preset = presetFor(codec, presetLevel);
+  switch (codec) {
+    case 'libx264': case 'libx265':
+    case 'libsvtav1':
+      if (preset) args.push('-preset', preset);
+      break;
+    case 'libaom-av1':
+      if (preset) args.push('-cpu-used', preset);
+      args.push('-row-mt', '1', '-tiles', '2x2');
+      break;
+    case 'libvpx-vp9':
+      if (preset) args.push('-cpu-used', preset);
+      args.push('-row-mt', '1', '-deadline', 'good');
+      break;
+    case 'h264_nvenc': case 'hevc_nvenc': case 'av1_nvenc':
+      if (preset) args.push('-preset', preset);
+      args.push('-tune', 'hq');
+      break;
+    case 'h264_qsv': case 'hevc_qsv': case 'av1_qsv':
+      if (preset) args.push('-preset', preset);
+      break;
+    case 'h264_amf': case 'hevc_amf': case 'av1_amf':
+      if (preset) args.push('-quality', preset);
+      break;
+    // VAAPI: no common preset.
+  }
+  args.push(...qualityArgsFor(codec, quality));
+  return args;
+}
+
+// Escapes a filesystem path for use inside ffmpeg's filter graph (where
+// `:` separates filter options and `\` is the escape character).
+function ffmpegFilterPath(p) {
+  return "'" + p.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'") + "'";
+}
+
 function videoCodecArgs(codec, presetLevel, videoKbps) {
   const buf = `${Math.max(2, Math.floor(videoKbps * 2))}k`;
   const rateBlock = ['-b:v', `${videoKbps}k`, '-maxrate', `${videoKbps}k`, '-bufsize', buf];
@@ -287,13 +369,15 @@ function runFfmpeg(args, duration, onProgress) {
 }
 
 async function compress(opts, send) {
-  const {
+  let {
     input, output, targetMb,
     audioKbps, removeAudio = false,
     codec = 'libx264',
     presetLevel = 'balanced',
-    mode = 'twopass',                       // 'twopass' | 'fast'
+    mode = 'twopass',                       // 'twopass' | 'fast' | 'crf'
     trimStart = 0, trimEnd = null,
+    crf = 60,                               // 0..100 quality slider; only used when mode === 'crf'
+    burnSubtitles = false,
   } = opts;
 
   cancelled = false;
@@ -306,10 +390,13 @@ async function compress(opts, send) {
   if (end <= start) throw new Error('Trim end must be after trim start.');
   const effectiveDuration = end - start;
 
-  const totalKbps = (targetMb * 8 * 1024) / effectiveDuration;
+  // CRF mode skips the bitrate budget entirely; quality is fixed and the
+  // resulting file size is whatever it is.
+  const isCrfMode = mode === 'crf';
+  const totalKbps = isCrfMode ? 0 : (targetMb * 8 * 1024) / effectiveDuration;
   const audioK = removeAudio ? 0 : audioKbps;
-  const videoKbps = Math.floor(totalKbps - audioK);
-  if (videoKbps < 100) {
+  const videoKbps = isCrfMode ? 0 : Math.floor(totalKbps - audioK);
+  if (!isCrfMode && videoKbps < 100) {
     // Compute the smallest target that would give ~150 kbps video + audio,
     // then suggest the cheapest Discord tier that covers it. Way more
     // actionable than just "trim or pick higher tier".
@@ -328,10 +415,18 @@ async function compress(opts, send) {
     );
   }
 
-  const scaleH = pickScale(info.height, targetMb);
+  // Auto-downscaling is keyed off the target tier; doesn't apply in CRF mode.
+  const scaleH = isCrfMode ? null : pickScale(info.height, targetMb);
   // Build the -vf filter chain. For VAAPI we still let ffmpeg do CPU-side
   // scaling and then upload the frame to GPU for encoding via format+hwupload.
   let vfChain = scaleH ? `scale=-2:${scaleH}` : '';
+  // Burn-in subtitles BEFORE any HW upload step so libass renders to CPU
+  // memory and the result becomes part of the frames being sent to the
+  // encoder. si=0 picks the first subtitle stream.
+  if (burnSubtitles) {
+    const subFilter = `subtitles=${ffmpegFilterPath(input)}:si=0`;
+    vfChain = vfChain ? `${subFilter},${vfChain}` : subFilter;
+  }
   const vaapiSuffix = vaapiVfSuffix(codec);
   if (vaapiSuffix) vfChain = vfChain ? `${vfChain},${vaapiSuffix}` : vaapiSuffix;
   const vf = vfChain || null;
@@ -346,8 +441,9 @@ async function compress(opts, send) {
     output = stem + wantedExt;
   }
 
-  // Two-pass only works cleanly with libx264/libx265. For HW encoders or Fast
-  // mode, fall back to a single-pass CBR encode.
+  // Two-pass only works cleanly with libx264/libx265 etc. (CPU codecs).
+  // CRF and Fast modes are always single-pass; HW encoders silently fall
+  // back to single-pass even when twopass was requested.
   const wantTwoPass = mode === 'twopass' && isCpuCodec(codec);
 
   // Trim args go before -i (input seek = fast) and after (output seek for accuracy).
@@ -363,7 +459,9 @@ async function compress(opts, send) {
     ...outputTrim,
   ];
 
-  const videoArgs = videoCodecArgs(codec, presetLevel, videoKbps);
+  const videoArgs = isCrfMode
+    ? videoCodecArgsCRF(codec, presetLevel, crf)
+    : videoCodecArgs(codec, presetLevel, videoKbps);
   if (vf) videoArgs.push('-vf', vf);
   // VAAPI encoders consume hardware frames after hwupload; setting -pix_fmt
   // would clash with that. Other codecs all accept yuv420p as a safe 8-bit
@@ -558,6 +656,44 @@ function registerIpc(win) {
 
   ipcMain.handle('update:check', () => checkForUpdate());
 
+  // Renderer toggles this when the System tab loses/gains focus so we
+  // don't waste IPC bandwidth on stats nobody is watching.
+  ipcMain.handle('stats:setEnabled', (_e, on) => {
+    statsEnabled = !!on;
+    return statsEnabled;
+  });
+
+  // Copies the produced file to the OS clipboard so the user can paste it
+  // straight into a Discord chat. File-on-clipboard plumbing differs per
+  // platform — see comments inline.
+  ipcMain.handle('clipboard:copyFile', (_e, p) => {
+    if (!p || !fs.existsSync(p)) return { ok: false, error: 'file not found' };
+    try {
+      if (process.platform === 'win32') {
+        // PowerShell's Set-Clipboard -Path puts a CF_HDROP file list on the
+        // clipboard, which Discord (and Explorer) accept on paste.
+        const r = spawnSync('powershell.exe',
+          ['-NoProfile', '-NonInteractive', '-Command',
+           `Set-Clipboard -Path "${p.replace(/"/g, '""')}"`],
+          { windowsHide: true });
+        if (r.status === 0) return { ok: true, mode: 'file' };
+      } else if (process.platform === 'linux') {
+        const uri = 'file://' + encodeURI(p).replace(/#/g, '%23');
+        // Try Wayland (wl-copy) first, then X11 (xclip).
+        const wl = spawnSync('wl-copy', ['--type', 'text/uri-list'], { input: uri });
+        if (wl.status === 0) return { ok: true, mode: 'file' };
+        const xc = spawnSync('xclip', ['-selection', 'clipboard',
+          '-t', 'text/uri-list', '-i'], { input: uri });
+        if (xc.status === 0) return { ok: true, mode: 'file' };
+      }
+      // Fallback: copy path as text. Less convenient but always works.
+      clipboard.writeText(p);
+      return { ok: true, mode: 'text' };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
   // Filename auto-increment helper. Avoids overwriting an existing file by
   // appending " (1)", " (2)" etc. before the extension.
   ipcMain.handle('fs:resolveAvailable', (_e, p) => {
@@ -621,7 +757,7 @@ function createWindow() {
   registerIpc(win);
 
   const statsTimer = setInterval(() => {
-    if (win.isDestroyed()) return;
+    if (win.isDestroyed() || !statsEnabled) return;
     win.webContents.send('stats', sampleStats());
   }, 1000);
 
@@ -638,7 +774,20 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  // dvc-media://<absolute-path> serves local files to the renderer. We
+  // can't use file:// directly without disabling webSecurity; this gives
+  // the <video> element on the Encoding tab a clean URL it can load.
+  protocol.handle('dvc-media', (req) => {
+    const url = new URL(req.url);
+    let pathname = decodeURIComponent(url.pathname);
+    if (process.platform === 'win32' && /^\/[a-zA-Z]:/.test(pathname)) {
+      pathname = pathname.slice(1);
+    }
+    return net.fetch('file://' + pathname.replace(/\\/g, '/'));
+  });
+  createWindow();
+});
 app.on('window-all-closed', () => {
   killActive();
   if (process.platform !== 'darwin') app.quit();
