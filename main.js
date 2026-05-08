@@ -86,12 +86,22 @@ async function probeEncoders() {
       p.on('close', () => resolve(buf));
     });
     const wanted = [
-      'libx264', 'libx265',
-      'h264_nvenc', 'hevc_nvenc',
-      'h264_amf',   'hevc_amf',
-      'h264_qsv',   'hevc_qsv',
+      // H.264
+      'libx264',     'h264_nvenc',  'h264_qsv',   'h264_amf',  'h264_vaapi',
+      // HEVC
+      'libx265',     'hevc_nvenc',  'hevc_qsv',   'hevc_amf',  'hevc_vaapi',
+      // AV1
+      'libsvtav1',   'libaom-av1',  'av1_nvenc',  'av1_qsv',   'av1_amf',
+      // VP9
+      'libvpx-vp9',
     ];
-    availableEncoders = wanted.filter(name => new RegExp(`\\b${name}\\b`).test(out));
+    // Most encoder names contain a hyphen ('libaom-av1','libvpx-vp9') which
+    // breaks \b word boundaries. Use a custom anchor that allows alphanum,
+    // dash, and underscore around the match.
+    availableEncoders = wanted.filter(name => {
+      const esc = name.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+      return new RegExp(`(?<![A-Za-z0-9_-])${esc}(?![A-Za-z0-9_-])`).test(out);
+    });
     if (!availableEncoders.length) availableEncoders = ['libx264'];
   } catch (e) {
     appendLog(`encoder probe failed: ${e.message}\n`);
@@ -158,44 +168,90 @@ function pickScale(height, targetMb) {
   return null;
 }
 
-// Translate "max-quality / balanced / fastest" to per-encoder preset names.
-function presetFor(codec, level) {
-  if (codec === 'libx264' || codec === 'libx265') {
-    return { fastest: 'veryfast', balanced: 'medium', quality: 'slow' }[level];
-  }
-  if (codec === 'h264_nvenc' || codec === 'hevc_nvenc') {
-    return { fastest: 'p1', balanced: 'p4', quality: 'p7' }[level];
-  }
-  if (codec === 'h264_qsv' || codec === 'hevc_qsv') {
-    return { fastest: 'veryfast', balanced: 'medium', quality: 'veryslow' }[level];
-  }
-  if (codec === 'h264_amf' || codec === 'hevc_amf') {
-    return { fastest: 'speed', balanced: 'balanced', quality: 'quality' }[level];
-  }
-  return null;
+const CPU_CODECS = ['libx264','libx265','libsvtav1','libaom-av1','libvpx-vp9'];
+function isCpuCodec(c)   { return CPU_CODECS.includes(c); }
+function isNvencCodec(c) { return c.endsWith('_nvenc'); }
+function isQsvCodec(c)   { return c.endsWith('_qsv'); }
+function isAmfCodec(c)   { return c.endsWith('_amf'); }
+function isVaapiCodec(c) { return c.endsWith('_vaapi'); }
+
+// VP9 belongs in WebM; everything else (H.264, HEVC, AV1) goes in MP4.
+function containerFor(codec) {
+  return codec === 'libvpx-vp9' ? 'webm' : 'mp4';
 }
 
-function isCpuCodec(c)   { return c === 'libx264' || c === 'libx265'; }
-function isNvencCodec(c) { return c === 'h264_nvenc' || c === 'hevc_nvenc'; }
-function isQsvCodec(c)   { return c === 'h264_qsv'   || c === 'hevc_qsv'; }
-function isAmfCodec(c)   { return c === 'h264_amf'   || c === 'hevc_amf'; }
+// Translate the three logical levels (fastest / balanced / quality) into the
+// preset string each encoder family expects.
+function presetFor(codec, level) {
+  switch (codec) {
+    case 'libx264': case 'libx265':
+      return { fastest: 'veryfast', balanced: 'medium', quality: 'slow' }[level];
+    case 'libsvtav1':
+      return { fastest: '12', balanced: '8', quality: '4' }[level];
+    case 'libaom-av1':
+      return { fastest: '6', balanced: '4', quality: '1' }[level];
+    case 'libvpx-vp9':
+      return { fastest: '8', balanced: '4', quality: '1' }[level];
+    case 'h264_nvenc': case 'hevc_nvenc': case 'av1_nvenc':
+      return { fastest: 'p1', balanced: 'p4', quality: 'p7' }[level];
+    case 'h264_qsv': case 'hevc_qsv': case 'av1_qsv':
+      return { fastest: 'veryfast', balanced: 'medium', quality: 'veryslow' }[level];
+    case 'h264_amf': case 'hevc_amf': case 'av1_amf':
+      return { fastest: 'speed', balanced: 'balanced', quality: 'quality' }[level];
+    default:
+      return null; // VAAPI has no uniform preset name
+  }
+}
 
-// Common -c:v specific args (no bitrate yet). Two-pass-vs-single-pass branching
-// is added by the caller because pass-1 and pass-2 differ on -an/-c:a.
+// VAAPI needs a hardware device and an upload filter; this stays before -i.
+function vaapiInputArgs(codec) {
+  if (!isVaapiCodec(codec)) return [];
+  // /dev/dri/renderD128 is the conventional first render node on Linux.
+  // If a system has multiple GPUs, ffmpeg picks this by default too.
+  return ['-vaapi_device', '/dev/dri/renderD128'];
+}
+function vaapiVfSuffix(codec) {
+  return isVaapiCodec(codec) ? 'format=nv12,hwupload' : '';
+}
+
+// Common -c:v specific args, including bitrate targeting. Two-pass vs
+// single-pass branching is added by the caller because pass-1 and pass-2
+// differ on audio handling.
 function videoCodecArgs(codec, presetLevel, videoKbps) {
-  const args = ['-c:v', codec, '-b:v', `${videoKbps}k`,
-                '-maxrate', `${videoKbps}k`, '-bufsize', `${Math.max(2, Math.floor(videoKbps * 2))}k`];
+  const buf = `${Math.max(2, Math.floor(videoKbps * 2))}k`;
+  const rateBlock = ['-b:v', `${videoKbps}k`, '-maxrate', `${videoKbps}k`, '-bufsize', buf];
+  const args = ['-c:v', codec, ...rateBlock];
   const preset = presetFor(codec, presetLevel);
-  if (isCpuCodec(codec)) {
-    if (preset) args.push('-preset', preset);
-  } else if (isNvencCodec(codec)) {
-    if (preset) args.push('-preset', preset);
-    args.push('-rc', 'cbr', '-tune', 'hq');
-  } else if (isQsvCodec(codec)) {
-    if (preset) args.push('-preset', preset);
-  } else if (isAmfCodec(codec)) {
-    if (preset) args.push('-quality', preset);
-    args.push('-rc', 'cbr');
+
+  switch (codec) {
+    case 'libx264': case 'libx265':
+      if (preset) args.push('-preset', preset);
+      break;
+    case 'libsvtav1':
+      if (preset) args.push('-preset', preset);
+      break;
+    case 'libaom-av1':
+      if (preset) args.push('-cpu-used', preset);
+      args.push('-row-mt', '1', '-tiles', '2x2');
+      break;
+    case 'libvpx-vp9':
+      if (preset) args.push('-cpu-used', preset);
+      args.push('-row-mt', '1', '-deadline', 'good');
+      break;
+    case 'h264_nvenc': case 'hevc_nvenc': case 'av1_nvenc':
+      if (preset) args.push('-preset', preset);
+      args.push('-rc', 'cbr', '-tune', 'hq');
+      break;
+    case 'h264_qsv': case 'hevc_qsv': case 'av1_qsv':
+      if (preset) args.push('-preset', preset);
+      break;
+    case 'h264_amf': case 'hevc_amf': case 'av1_amf':
+      if (preset) args.push('-quality', preset);
+      args.push('-rc', 'cbr');
+      break;
+    case 'h264_vaapi': case 'hevc_vaapi':
+      args.push('-rc_mode', 'CBR');
+      break;
   }
   return args;
 }
@@ -254,14 +310,41 @@ async function compress(opts, send) {
   const audioK = removeAudio ? 0 : audioKbps;
   const videoKbps = Math.floor(totalKbps - audioK);
   if (videoKbps < 100) {
+    // Compute the smallest target that would give ~150 kbps video + audio,
+    // then suggest the cheapest Discord tier that covers it. Way more
+    // actionable than just "trim or pick higher tier".
+    const minVideo = 150;
+    const minTotalKbps = minVideo + audioK;
+    const minMb = Math.ceil(minTotalKbps * effectiveDuration / (8 * 1024));
+    let suggest;
+    if (minMb <= 9.5)        suggest = 'No Nitro (10 MB)';
+    else if (minMb <= 49)    suggest = 'Nitro Basic (50 MB)';
+    else if (minMb <= 495)   suggest = 'Nitro (500 MB)';
+    else                     suggest = `Custom ≥ ${minMb} MB`;
+    const stripHint = audioK > 0 ? ', strip audio,' : ',';
     throw new Error(
-      `Target size too small for this clip (${effectiveDuration.toFixed(1)}s after trim). ` +
-      `Try a higher tier, trim more, or strip audio.`
+      `Target size too small for this ${effectiveDuration.toFixed(1)}s clip. ` +
+      `Need at least ~${minMb} MB. Try ${suggest}${stripHint} or trim more.`
     );
   }
 
   const scaleH = pickScale(info.height, targetMb);
-  const vf = scaleH ? `scale=-2:${scaleH}` : null;
+  // Build the -vf filter chain. For VAAPI we still let ffmpeg do CPU-side
+  // scaling and then upload the frame to GPU for encoding via format+hwupload.
+  let vfChain = scaleH ? `scale=-2:${scaleH}` : '';
+  const vaapiSuffix = vaapiVfSuffix(codec);
+  if (vaapiSuffix) vfChain = vfChain ? `${vfChain},${vaapiSuffix}` : vaapiSuffix;
+  const vf = vfChain || null;
+
+  // Override the output extension if the user picked VP9 (which lives in
+  // WebM rather than MP4). Doing this in main rather than the renderer
+  // means it's enforced even if the renderer's sync is bypassed.
+  const wantedExt = '.' + containerFor(codec);
+  const curExt = path.extname(output).toLowerCase();
+  if (curExt !== wantedExt) {
+    const stem = curExt ? output.slice(0, -curExt.length) : output;
+    output = stem + wantedExt;
+  }
 
   // Two-pass only works cleanly with libx264/libx265. For HW encoders or Fast
   // mode, fall back to a single-pass CBR encode.
@@ -274,6 +357,7 @@ async function compress(opts, send) {
   const baseInput = [
     '-y', '-hide_banner', '-loglevel', 'error',
     '-progress', 'pipe:1', '-nostats',
+    ...vaapiInputArgs(codec),
     ...inputTrim,
     '-i', input,
     ...outputTrim,
@@ -281,23 +365,35 @@ async function compress(opts, send) {
 
   const videoArgs = videoCodecArgs(codec, presetLevel, videoKbps);
   if (vf) videoArgs.push('-vf', vf);
-  videoArgs.push('-pix_fmt', 'yuv420p');
+  // VAAPI encoders consume hardware frames after hwupload; setting -pix_fmt
+  // would clash with that. Other codecs all accept yuv420p as a safe 8-bit
+  // baseline that maximises playback compatibility.
+  if (!isVaapiCodec(codec)) videoArgs.push('-pix_fmt', 'yuv420p');
 
   if (wantTwoPass) {
     const logPrefix = path.join(path.dirname(output),
                                 path.parse(output).name + '_2pass');
     const nullSink = process.platform === 'win32' ? 'NUL' : '/dev/null';
+    // -f null discards output without invoking a real muxer, so it's safe
+    // for any codec (libvpx-vp9 / svt-av1 don't fit into an mp4 muxer).
     const pass1 = [
       ...baseInput, ...videoArgs,
       '-pass', '1', '-passlogfile', logPrefix,
-      '-an', '-f', 'mp4', nullSink,
+      '-an', '-f', 'null', nullSink,
     ];
-    const pass2Tail = removeAudio ? ['-an'] : ['-c:a', 'aac', '-b:a', `${audioKbps}k`];
+    // Audio codec depends on the container.
+    const audioCodec = containerFor(codec) === 'webm' ? 'libopus' : 'aac';
+    const pass2Tail = removeAudio
+      ? ['-an']
+      : ['-c:a', audioCodec, '-b:a', `${audioKbps}k`];
+    // +faststart only applies to MP4-family muxers; harmless flag elsewhere
+    // but the WebM muxer ignores it anyway.
+    const muxFlags = containerFor(codec) === 'mp4' ? ['-movflags', '+faststart'] : [];
     const pass2 = [
       ...baseInput, ...videoArgs,
       '-pass', '2', '-passlogfile', logPrefix,
       ...pass2Tail,
-      '-movflags', '+faststart',
+      ...muxFlags,
       output,
     ];
 
@@ -321,11 +417,15 @@ async function compress(opts, send) {
     }
   } else {
     // Single-pass.
-    const audioTail = removeAudio ? ['-an'] : ['-c:a', 'aac', '-b:a', `${audioKbps}k`];
+    const audioCodec = containerFor(codec) === 'webm' ? 'libopus' : 'aac';
+    const audioTail = removeAudio
+      ? ['-an']
+      : ['-c:a', audioCodec, '-b:a', `${audioKbps}k`];
+    const muxFlags = containerFor(codec) === 'mp4' ? ['-movflags', '+faststart'] : [];
     const args = [
       ...baseInput, ...videoArgs,
       ...audioTail,
-      '-movflags', '+faststart',
+      ...muxFlags,
       output,
     ];
     const phase = isCpuCodec(codec) ? 'Encoding (1 pass)' : 'Encoding (HW accel)';
@@ -336,7 +436,7 @@ async function compress(opts, send) {
   }
 
   const sizeMb = fs.statSync(output).size / (1024 * 1024);
-  return { sizeMb };
+  return { sizeMb, output };
 }
 
 // ---------- update checker ----------
@@ -442,8 +542,10 @@ function registerIpc(win) {
 
   ipcMain.handle('compress:start', async (_e, opts) => {
     try {
-      const { sizeMb } = await compress(opts, send);
-      return { ok: true, sizeMb, output: opts.output };
+      // compress() may rewrite the output extension when a codec demands a
+      // specific container, so use what it returns rather than opts.output.
+      const { sizeMb, output } = await compress(opts, send);
+      return { ok: true, sizeMb, output };
     } catch (err) {
       return { ok: false, error: err.message || String(err) };
     }

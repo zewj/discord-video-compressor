@@ -594,6 +594,15 @@ html[data-theme="light"] .blob { opacity: 0.35; mix-blend-mode: multiply; }
   color: white;
   box-shadow: 0 4px 12px var(--accent-glow);
 }
+.seg-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.seg-btn:disabled:hover {
+  color: var(--text-dim);
+  background: transparent;
+  transform: none;
+}
 
 /* trim row */
 .trim-row { display: flex; align-items: center; gap: 8px; }

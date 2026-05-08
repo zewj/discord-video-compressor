@@ -7,22 +7,39 @@ const TIERS = {
 
 // Friendly labels for each codec.
 const CODEC_LABELS = {
-  libx264:    'CPU H.264 (libx264)',
-  libx265:    'CPU HEVC / H.265 (libx265)',
-  h264_nvenc: 'NVIDIA NVENC H.264',
-  hevc_nvenc: 'NVIDIA NVENC HEVC',
-  h264_amf:   'AMD AMF H.264',
-  hevc_amf:   'AMD AMF HEVC',
-  h264_qsv:   'Intel QuickSync H.264',
-  hevc_qsv:   'Intel QuickSync HEVC',
+  libx264:      'CPU H.264 (libx264)',
+  libx265:      'CPU HEVC / H.265 (libx265)',
+  h264_nvenc:   'NVIDIA NVENC H.264',
+  hevc_nvenc:   'NVIDIA NVENC HEVC',
+  av1_nvenc:    'NVIDIA NVENC AV1 (RTX 40+)',
+  h264_amf:     'AMD AMF H.264',
+  hevc_amf:     'AMD AMF HEVC',
+  av1_amf:      'AMD AMF AV1 (RDNA 3+)',
+  h264_qsv:     'Intel QuickSync H.264',
+  hevc_qsv:     'Intel QuickSync HEVC',
+  av1_qsv:      'Intel QuickSync AV1 (Arc)',
+  h264_vaapi:   'Linux VAAPI H.264',
+  hevc_vaapi:   'Linux VAAPI HEVC',
+  libsvtav1:    'CPU AV1 (SVT-AV1)',
+  'libaom-av1': 'CPU AV1 (libaom — slow)',
+  'libvpx-vp9': 'CPU VP9 (libvpx) — WebM',
 };
-// Preferred default order: HW H.264 > CPU H.264 > anything else.
+// H.264 first (most compatible). AV1 / VP9 only if the user explicitly picks.
 const CODEC_PRIORITY = [
-  'h264_nvenc', 'h264_qsv', 'h264_amf',
+  'h264_nvenc', 'h264_qsv', 'h264_amf', 'h264_vaapi',
   'libx264',
-  'hevc_nvenc', 'hevc_qsv', 'hevc_amf',
+  'hevc_nvenc', 'hevc_qsv', 'hevc_amf', 'hevc_vaapi',
   'libx265',
+  'av1_nvenc', 'av1_qsv', 'av1_amf',
+  'libsvtav1', 'libaom-av1',
+  'libvpx-vp9',
 ];
+
+// Mirror of the main-process predicates so the renderer can disable the
+// Two-pass button immediately on codec change without an extra round-trip.
+const CPU_CODECS = ['libx264','libx265','libsvtav1','libaom-av1','libvpx-vp9'];
+function isCpuCodec(c) { return CPU_CODECS.includes(c); }
+function containerFor(c) { return c === 'libvpx-vp9' ? 'webm' : 'mp4'; }
 
 const els = {
   inputPath: document.getElementById('input-path'),
@@ -286,24 +303,65 @@ function populateCodecs(encoders) {
   const saved = localStorage.getItem('dvc.codec');
   if (saved && ordered.includes(saved)) els.codecSelect.value = saved;
   updateCodecHint();
+  syncModeForCodec();
 }
 els.codecSelect.addEventListener('change', () => {
   localStorage.setItem('dvc.codec', els.codecSelect.value);
   updateCodecHint();
+  syncModeForCodec();
+  syncOutputExtForCodec(els.codecSelect.value);
 });
 
 function updateCodecHint() {
   const c = els.codecSelect.value;
   if (!c) { els.codecHint.textContent = 'No encoders detected.'; return; }
-  if (c.startsWith('lib')) {
-    els.codecHint.textContent = 'CPU encoder. Two-pass available; high quality.';
+  let hint;
+  if (c === 'libx264' || c === 'libx265') {
+    hint = 'CPU encoder. Two-pass available; high quality.';
+  } else if (c === 'libsvtav1') {
+    hint = 'CPU AV1 (SVT-AV1). Modern, efficient. MP4 output.';
+  } else if (c === 'libaom-av1') {
+    hint = 'CPU AV1 (libaom). Highest quality, very slow. MP4 output.';
+  } else if (c === 'libvpx-vp9') {
+    hint = 'CPU VP9. Output is .webm — Discord previews vary by client.';
   } else if (c.includes('nvenc')) {
-    els.codecHint.textContent = 'NVIDIA GPU encoder. Much faster; uses single-pass CBR.';
+    hint = 'NVIDIA GPU encoder. Much faster; single-pass CBR.';
   } else if (c.includes('qsv')) {
-    els.codecHint.textContent = 'Intel iGPU encoder. Faster than CPU; single-pass.';
+    hint = 'Intel iGPU encoder. Faster than CPU; single-pass.';
   } else if (c.includes('amf')) {
-    els.codecHint.textContent = 'AMD GPU encoder. Faster than CPU; single-pass.';
+    hint = 'AMD GPU encoder. Faster than CPU; single-pass.';
+  } else if (c.includes('vaapi')) {
+    hint = 'Linux VAAPI HW encoder. Single-pass; needs /dev/dri/renderD128.';
+  } else {
+    hint = '';
   }
+  els.codecHint.textContent = hint;
+}
+
+// HW encoders don't support two-pass cleanly. Disable the button and
+// force-switch to Fast if a HW codec is picked while Two-pass is active.
+function syncModeForCodec() {
+  const c = els.codecSelect.value;
+  const cpu = isCpuCodec(c);
+  const twoBtn = document.querySelector('.seg-btn[data-mode="twopass"]');
+  if (!twoBtn) return;
+  twoBtn.disabled = !cpu;
+  twoBtn.title = cpu ? '' : 'Two-pass requires a CPU codec';
+  if (!cpu && mode === 'twopass') {
+    document.querySelector('.seg-btn[data-mode="fast"]').click();
+  }
+}
+
+// Keep the displayed output filename's extension in sync with the codec's
+// container (VP9 → .webm, everything else → .mp4).
+function syncOutputExtForCodec(c) {
+  const cur = els.outputPath.value;
+  if (!cur) return;
+  const wantedExt = '.' + containerFor(c);
+  const m = cur.match(/^(.*)(\.[^.\\/]+)$/);
+  const base = m ? m[1] : cur;
+  const newPath = base + wantedExt;
+  if (newPath !== cur) setOutputPath(newPath);
 }
 
 // ---------- Segmented controls (mode + preset) ----------
