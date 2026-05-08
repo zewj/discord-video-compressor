@@ -41,6 +41,7 @@ If the chosen target leaves less than ~100 kbps for video, the app refuses to en
 - **Visual trim** — select a clip and a video preview appears in the Encoding tab with a draggable timeline. Two handles set start/end; a play button loops within the trim range. Numerical mm:ss inputs still work for precision.
 - **Copy to clipboard** — paste the compressed file straight into Discord. Uses the OS file clipboard (`Set-Clipboard -Path` on Windows, `wl-copy` / `xclip` on Linux).
 - **Persistent settings** — tier, mode, preset, audio bitrate, custom resolution/framerate, mute, burn-subs, CRF, concurrency, and the Custom MB value all persist across launches via `localStorage`.
+- **Custom profiles** — save the current encoding configuration under a name (top of the Encoding tab). Restore later with one click; useful for switching between e.g. "Discord 10 MB H.264" / "Server Boost AV1 HEVC" / "Archive Quality CRF" without retoggling everything.
 
 ### Encoding
 - **Hardware acceleration** — auto-probes ffmpeg's encoder list at startup and lets you choose:
@@ -56,7 +57,7 @@ If the chosen target leaves less than ~100 kbps for video, the app refuses to en
 - **Trim**: visual timeline with draggable handles + numerical inputs (`mm:ss` / `hh:mm:ss` / decimal seconds). Bitrate is recomputed for the trimmed window.
 - **Audio bitrate slider** (32–256 kbps) and **Keep original audio** passthrough — lets you remux the source audio without re-encoding when the codec is compatible with the chosen container (AAC/AC3/EAC3/MP3/ALAC/Opus/FLAC into MP4, Opus/Vorbis into WebM).
 - **Strip audio** checkbox — uses `-an`, reallocates the audio budget to video. Useful for very short clips.
-- **Burn in subtitles** checkbox — bakes a subtitle stream into the encoded video via libass. When the source has multiple subtitle tracks a track-picker dropdown appears (it's hidden when there's only one).
+- **Burn in subtitles** checkbox — bakes a subtitle stream into the encoded video via libass. When the source has multiple subtitle tracks a track-picker dropdown appears (it's hidden when there's only one). Style presets (Default / Bold / Yellow anime / Movie) and a Custom row (font, size, primary colour, outline width) feed straight into ffmpeg's `force_style` block.
 - **Custom resolution / framerate** — optional overrides that beat the auto-downscale heuristic. Leave blank for default behaviour.
 - **Source metadata** displayed inline after picking a video: duration, resolution, codec(s), file size.
 
@@ -88,12 +89,13 @@ If the chosen target leaves less than ~100 kbps for video, the app refuses to en
   - Lookup order at runtime: PATH → `<install>\ffmpeg\` → `C:\ffmpeg\bin`.
 - **Internet** — only needed at install time, only when ffmpeg isn't already present.
 
-### Linux x64
+### Linux x64 / ARM64
 - **ffmpeg + ffprobe** — install via your package manager:
-  - Debian/Ubuntu: `sudo apt install ffmpeg`
+  - Debian/Ubuntu/Raspberry Pi OS: `sudo apt install ffmpeg`
   - Fedora/RHEL: `sudo dnf install ffmpeg` (RPM Fusion repo)
   - Arch: `sudo pacman -S ffmpeg`
 - The app's lookup order: PATH → `<install>/ffmpeg/` (drop a static build there for portable use).
+- **ARM64 / Raspberry Pi**: download the `aarch64` AppImage (or the `linux-arm64` tarball). Pi 4/5 users get H.264 / HEVC software encoding via libx264 / libx265; HW encoders (NVENC, QSV, AMF) aren't available on Pi. VAAPI may work on some other ARM64 boards (RK3588, etc.) — the app's encoder probe will show what's available. Pi 3 and earlier are not officially supported — Electron's Chromium runtime is heavy.
 
 ### Hardware acceleration (optional, both platforms)
 Works automatically when available; the codec dropdown shows whatever ffmpeg detects.

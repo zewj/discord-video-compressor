@@ -418,7 +418,7 @@ async function compress(opts, send) {
     mode = 'twopass',                       // 'twopass' | 'fast' | 'crf'
     trimStart = 0, trimEnd = null,
     crf = 60,
-    burnSubtitles = false, subtitleTrack = 0,
+    burnSubtitles = false, subtitleTrack = 0, subtitleStyle = null,
     customResolution = null,                // "1280x720" or "1280:720" or null
     customFramerate = null,                 // number or null
     jobId,
@@ -478,7 +478,14 @@ async function compress(opts, send) {
   // encoder. subtitleTrack lets the user pick if there's more than one.
   if (burnSubtitles) {
     const trackIdx = Math.max(0, parseInt(subtitleTrack, 10) || 0);
-    const subFilter = `subtitles=${ffmpegFilterPath(input)}:si=${trackIdx}`;
+    let subFilter = `subtitles=${ffmpegFilterPath(input)}:si=${trackIdx}`;
+    // libass force_style block accepts the same syntax as an ASS Style row.
+    // Single-quote the whole value so commas inside don't terminate the
+    // filter option list early.
+    if (subtitleStyle) {
+      const escaped = subtitleStyle.replace(/'/g, "\\'");
+      subFilter += `:force_style='${escaped}'`;
+    }
     vfChain = vfChain ? `${subFilter},${vfChain}` : subFilter;
   }
   const vaapiSuffix = vaapiVfSuffix(codec);

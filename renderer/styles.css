@@ -657,6 +657,39 @@ html[data-theme="light"] .blob { opacity: 0.35; mix-blend-mode: multiply; }
 }
 .select-tight { padding: 6px 10px; font-size: 12px; }
 .check-tight { font-size: 12px; }
+
+/* Profiles row — sits above the options grid in the Encoding tab. */
+.profile-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.profile-row .opt-label { margin-right: 4px; }
+.profile-row select { flex: 1; min-width: 0; }
+
+/* Subtitle styling sub-row */
+.sub-style-row {
+  display: flex; flex-direction: column; gap: 8px;
+  margin-top: 6px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  animation: rise 240ms var(--ease) backwards;
+}
+.sub-custom-row {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.sub-custom-row input[type="color"] {
+  width: 38px; height: 32px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 2px;
+}
 /* Style the dropdown popup itself. Without this Chromium falls back to
    the OS default which can render white-on-white in dark themes. */
 .select option {

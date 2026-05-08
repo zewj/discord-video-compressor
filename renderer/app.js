@@ -90,11 +90,21 @@ const els = {
   audioCopy: document.getElementById('audio-copy'),
   audioHint: document.getElementById('audio-hint'),
   subTrack: document.getElementById('sub-track'),
+  subStyleRow: document.getElementById('sub-style-row'),
+  subStylePreset: document.getElementById('sub-style-preset'),
+  subCustomRow: document.getElementById('sub-custom-row'),
+  subFont: document.getElementById('sub-font'),
+  subSize: document.getElementById('sub-size'),
+  subColor: document.getElementById('sub-color'),
+  subOutline: document.getElementById('sub-outline'),
   customRes: document.getElementById('custom-res'),
   customFps: document.getElementById('custom-fps'),
   concurrencySlider: document.getElementById('concurrency-slider'),
   concurrencyValue: document.getElementById('concurrency-value'),
   crfQualityLabel: document.getElementById('crf-quality-label'),
+  profileSelect: document.getElementById('profile-select'),
+  profileSave: document.getElementById('profile-save'),
+  profileDelete: document.getElementById('profile-delete'),
 
   dropOverlay: document.getElementById('drop-overlay'),
 };
@@ -907,10 +917,52 @@ window.api.onProgress(({ jobId, phase, percent, currentSec, durationSec, speed }
   updateGlobalProgress();
 });
 
+// Compute a global queue ETA that schedules all remaining work across the
+// configured concurrency slots: each slot is "busy" for the active job's
+// remaining time, then becomes free; queued items are assigned in order to
+// whichever slot frees up first. The ETA is the max slot busy-time.
+function computeQueueEta() {
+  const active = queue.filter(q => q.status === 'encoding');
+  const queued = queue.filter(q => q.status === 'queued');
+  if (!active.length && !queued.length) return null;
+
+  // Average speed across active jobs (default 1.0× when we have no data yet).
+  let totalSpeed = 0, speedCount = 0;
+  for (const a of active) {
+    const d = jobProgress.get(a.jobId);
+    if (d && d.speed) { totalSpeed += d.speed; speedCount++; }
+  }
+  const avgSpeed = speedCount > 0 ? totalSpeed / speedCount : 1.0;
+
+  const slots = Math.max(1, concurrency);
+  const slotTimes = new Array(slots).fill(0);
+
+  // Seed each slot with an active job's remaining time.
+  active.slice(0, slots).forEach((a, i) => {
+    const d = jobProgress.get(a.jobId);
+    if (d && d.durationSec && d.speed) {
+      slotTimes[i] = Math.max(0, d.durationSec - d.currentSec) / d.speed;
+    }
+  });
+
+  // Assign each queued item to the slot that frees up earliest.
+  for (const q of queued) {
+    const dur = q.info?.duration || 30; // fall back to 30s if probe didn't run
+    const cost = dur / avgSpeed;
+    let minIdx = 0;
+    for (let i = 1; i < slots; i++) {
+      if (slotTimes[i] < slotTimes[minIdx]) minIdx = i;
+    }
+    slotTimes[minIdx] += cost;
+  }
+
+  return Math.max(...slotTimes);
+}
+
 function updateGlobalProgress() {
   const active = queue.filter(q => q.status === 'encoding');
   if (active.length === 0) return;
-  if (active.length === 1) {
+  if (active.length === 1 && queue.filter(q => q.status === 'queued').length === 0) {
     const item = active[0];
     const data = jobProgress.get(item.jobId);
     if (!data) return;
@@ -925,24 +977,17 @@ function updateGlobalProgress() {
     }
     els.timeInfo.textContent = info;
   } else {
-    // Multiple jobs running in parallel — show aggregate.
-    const totalQueued = queue.filter(q => q.status === 'queued' || q.status === 'encoding').length;
+    // Multiple jobs running in parallel and/or queued items waiting.
     const totalDone = queue.filter(q => q.status === 'done').length;
     const grand = queue.length;
     const avgPct = active.reduce((s, q) => s + (q.progress || 0), 0) / active.length;
     els.progressFill.style.width = `${avgPct.toFixed(1)}%`;
     encBar.style.width = `${avgPct.toFixed(1)}%`;
-    els.phase.textContent = `${active.length} jobs · ${totalDone}/${grand} done`;
-    // Aggregate ETA: max remaining seconds across active jobs.
-    let maxEta = 0;
-    for (const a of active) {
-      const d = jobProgress.get(a.jobId);
-      if (d && d.speed && d.durationSec) {
-        const eta = Math.max(0, d.durationSec - d.currentSec) / d.speed;
-        if (Number.isFinite(eta)) maxEta = Math.max(maxEta, eta);
-      }
-    }
-    els.timeInfo.textContent = maxEta > 0.5 ? `ETA ${fmtSec(maxEta)} (longest active)` : '';
+    els.phase.textContent = `${active.length} active · ${totalDone}/${grand} done`;
+    const eta = computeQueueEta();
+    els.timeInfo.textContent = eta && eta > 0.5
+      ? `Queue ETA ${fmtSec(eta)}`
+      : '';
   }
 }
 
@@ -997,6 +1042,7 @@ async function startCompress() {
     crf: parseInt(els.crfSlider.value, 10),
     burnSubtitles: els.burnSubs.checked,
     subtitleTrack,
+    subtitleStyle: els.burnSubs.checked ? buildSubtitleStyle() : null,
     customResolution: els.customRes.value.trim() || null,
     customFramerate: els.customFps.value.trim() || null,
   };
@@ -1112,6 +1158,182 @@ function ffmpegHint(platform) {
   return 'Install ffmpeg from ffmpeg.org, or place it at C:\\ffmpeg\\bin.';
 }
 
+// ===========================================================================
+// SUBTITLE STYLING
+// ===========================================================================
+
+// Built-in style presets. force_style is libass syntax — the same options
+// you'd put in an ASS file's Style block.
+const SUB_STYLE_PRESETS = {
+  default: '',
+  bold:    'Fontname=Arial,Fontsize=28,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0',
+  yellow:  'Fontname=Arial,Fontsize=26,Bold=1,PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=1',
+  movie:   'Fontname=Arial,Fontsize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=1,Shadow=2',
+  custom:  null,
+};
+
+// Convert "#RRGGBB" → libass "&HBBGGRR" hex (BGR order, alpha implicit 00).
+function colorToAss(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec((hex || '').trim());
+  if (!m) return '&H00FFFFFF';
+  const r = m[1].slice(0, 2);
+  const g = m[1].slice(2, 4);
+  const b = m[1].slice(4, 6);
+  return `&H00${b}${g}${r}`.toUpperCase();
+}
+
+function buildSubtitleStyle() {
+  const preset = els.subStylePreset.value;
+  if (preset !== 'custom') return SUB_STYLE_PRESETS[preset] || '';
+  const parts = [];
+  if (els.subFont.value.trim())  parts.push(`Fontname=${els.subFont.value.trim()}`);
+  if (els.subSize.value)         parts.push(`Fontsize=${parseInt(els.subSize.value, 10)}`);
+  parts.push(`PrimaryColour=${colorToAss(els.subColor.value)}`);
+  if (els.subOutline.value)      parts.push(`Outline=${parseInt(els.subOutline.value, 10)}`,
+                                            'BorderStyle=1');
+  return parts.join(',');
+}
+
+function syncSubsUI() {
+  const enabled = els.burnSubs.checked && !els.burnSubs.disabled;
+  els.subStyleRow.hidden = !enabled;
+  els.subCustomRow.hidden = els.subStylePreset.value !== 'custom';
+}
+els.burnSubs.addEventListener('change', syncSubsUI);
+els.subStylePreset.addEventListener('change', syncSubsUI);
+
+// ===========================================================================
+// PROFILES (save/load/delete encoding presets)
+// ===========================================================================
+
+const PROFILES_KEY = 'dvc.profiles';
+function loadProfiles() {
+  try { return JSON.parse(localStorage.getItem(PROFILES_KEY) || '[]'); }
+  catch { return []; }
+}
+function saveProfiles(arr) {
+  try { localStorage.setItem(PROFILES_KEY, JSON.stringify(arr)); } catch (_) {}
+}
+
+function snapshotCurrentSettings() {
+  return {
+    codec: els.codecSelect.value,
+    mode,
+    presetLevel,
+    tier: getTier(),
+    customMb: parseFloat(els.customMb.value),
+    audioKbps: parseInt(els.audioKbpsSlider.value, 10),
+    audioCopy: els.audioCopy.checked,
+    removeAudio: els.muteAudio.checked,
+    burnSubs: els.burnSubs.checked,
+    subStylePreset: els.subStylePreset.value,
+    subFont: els.subFont.value,
+    subSize: els.subSize.value,
+    subColor: els.subColor.value,
+    subOutline: els.subOutline.value,
+    customRes: els.customRes.value,
+    customFps: els.customFps.value,
+    crf: parseInt(els.crfSlider.value, 10),
+    concurrency,
+  };
+}
+
+function applyProfile(p) {
+  if (!p) return;
+  if (p.codec) {
+    const opt = Array.from(els.codecSelect.options).find(o => o.value === p.codec);
+    if (opt) els.codecSelect.value = p.codec;
+  }
+  if (p.mode) {
+    const btn = document.querySelector(`.seg-btn[data-mode="${p.mode}"]`);
+    if (btn && !btn.disabled) btn.click();
+  }
+  if (p.presetLevel) {
+    const btn = document.querySelector(`.seg-btn[data-preset="${p.presetLevel}"]`);
+    if (btn) btn.click();
+  }
+  if (p.tier) {
+    const r = document.querySelector(`input[name="tier"][value="${p.tier}"]`);
+    if (r) { r.checked = true; syncCustomRow(); savedTier.set(p.tier); }
+  }
+  if (Number.isFinite(p.customMb)) {
+    setCustomMb(p.customMb, null);
+  }
+  if (Number.isFinite(p.audioKbps)) {
+    els.audioKbpsSlider.value = String(p.audioKbps);
+    els.audioKbpsSlider.dispatchEvent(new Event('input'));
+  }
+  if (typeof p.audioCopy === 'boolean')  { els.audioCopy.checked = p.audioCopy;  refreshAudioHint(); savedAudioCopy.set(p.audioCopy); }
+  if (typeof p.removeAudio === 'boolean'){ els.muteAudio.checked = p.removeAudio; savedMute.set(p.removeAudio); }
+  if (typeof p.burnSubs === 'boolean')   { els.burnSubs.checked = p.burnSubs;    savedBurnSubs.set(p.burnSubs); }
+  if (p.subStylePreset)  els.subStylePreset.value = p.subStylePreset;
+  if (p.subFont != null) els.subFont.value = p.subFont;
+  if (p.subSize != null) els.subSize.value = p.subSize;
+  if (p.subColor)        els.subColor.value = p.subColor;
+  if (p.subOutline != null) els.subOutline.value = p.subOutline;
+  syncSubsUI();
+  if (p.customRes != null) { els.customRes.value = p.customRes; savedCustomRes.set(p.customRes); }
+  if (p.customFps != null) { els.customFps.value = p.customFps; savedCustomFps.set(p.customFps); }
+  if (Number.isFinite(p.crf)) {
+    els.crfSlider.value = String(p.crf);
+    els.crfSlider.dispatchEvent(new Event('input'));
+  }
+  if (Number.isFinite(p.concurrency)) {
+    concurrency = Math.max(1, Math.min(4, p.concurrency));
+    els.concurrencySlider.value = String(concurrency);
+    els.concurrencySlider.dispatchEvent(new Event('input'));
+  }
+}
+
+function refreshProfileDropdown(selectedName) {
+  const profiles = loadProfiles();
+  els.profileSelect.innerHTML = '';
+  const def = document.createElement('option');
+  def.value = ''; def.textContent = '— Built-in defaults —';
+  els.profileSelect.appendChild(def);
+  for (const p of profiles) {
+    const opt = document.createElement('option');
+    opt.value = p.name;
+    opt.textContent = p.name;
+    els.profileSelect.appendChild(opt);
+  }
+  if (selectedName) els.profileSelect.value = selectedName;
+  els.profileDelete.disabled = !els.profileSelect.value;
+}
+
+els.profileSelect.addEventListener('change', () => {
+  const name = els.profileSelect.value;
+  els.profileDelete.disabled = !name;
+  if (!name) return;
+  const profiles = loadProfiles();
+  const p = profiles.find(x => x.name === name);
+  if (p) {
+    applyProfile(p.settings);
+    toast('info', 'Profile applied', name);
+  }
+});
+
+els.profileSave.addEventListener('click', () => {
+  const name = (prompt('Profile name:', '') || '').trim();
+  if (!name) return;
+  const profiles = loadProfiles();
+  const idx = profiles.findIndex(p => p.name === name);
+  const entry = { name, settings: snapshotCurrentSettings() };
+  if (idx >= 0) profiles[idx] = entry; else profiles.push(entry);
+  saveProfiles(profiles);
+  refreshProfileDropdown(name);
+  toast('success', 'Profile saved', name);
+});
+
+els.profileDelete.addEventListener('click', () => {
+  const name = els.profileSelect.value;
+  if (!name) return;
+  if (!confirm(`Delete profile "${name}"?`)) return;
+  saveProfiles(loadProfiles().filter(p => p.name !== name));
+  refreshProfileDropdown('');
+  toast('info', 'Profile deleted', name);
+});
+
 // ---------- Restore persisted settings on startup ----------
 function restorePersistedSettings() {
   // Mode segment.
@@ -1161,6 +1383,8 @@ window.api.onEncoders(populateCodecs);
     populateCodecs(['libx264']);
   }
   restorePersistedSettings();
+  refreshProfileDropdown('');
+  syncSubsUI();
 
   const upd = await window.api.checkUpdate();
   if (upd && upd.latest) {

@@ -145,6 +145,15 @@
 
       <!-- ===== ENCODING TAB ===== -->
       <section class="tab-panel" data-tab="encoding" hidden>
+        <div class="profile-row">
+          <span class="opt-label">Profiles</span>
+          <select id="profile-select" class="select select-tight">
+            <option value="">— Built-in defaults —</option>
+          </select>
+          <button type="button" class="btn btn-ghost btn-tiny" id="profile-save">Save current as...</button>
+          <button type="button" class="btn btn-ghost btn-tiny" id="profile-delete" disabled>Delete</button>
+        </div>
+
         <div class="options-grid">
           <label class="opt">
             <span class="opt-label">Codec / encoder</span>
@@ -228,7 +237,7 @@
             <span class="opt-hint">All bitrate goes to video. Useful for very short clips.</span>
           </label>
 
-          <label class="opt">
+          <div class="opt opt-wide">
             <span class="opt-label">Subtitles</span>
             <label class="check">
               <input type="checkbox" id="burn-subs" />
@@ -236,8 +245,23 @@
               <span>Burn in subtitles</span>
             </label>
             <select id="sub-track" class="select select-tight" hidden></select>
+            <div class="sub-style-row" id="sub-style-row" hidden>
+              <select id="sub-style-preset" class="select select-tight">
+                <option value="default">Default</option>
+                <option value="bold">Bold</option>
+                <option value="yellow">Yellow (anime)</option>
+                <option value="movie">Movie (white, drop shadow)</option>
+                <option value="custom">Custom...</option>
+              </select>
+              <div class="sub-custom-row" id="sub-custom-row" hidden>
+                <input id="sub-font" type="text" class="input-time" placeholder="Font (e.g. Arial)" style="width: 130px" />
+                <input id="sub-size" type="number" class="input-time" min="8" max="120" placeholder="Size" style="width: 70px" />
+                <input id="sub-color" type="color" value="#ffffff" title="Primary text colour" />
+                <input id="sub-outline" type="number" class="input-time" min="0" max="6" step="1" placeholder="Outline" style="width: 70px" />
+              </div>
+            </div>
             <span class="opt-hint" id="subs-hint">Source has no subtitle tracks.</span>
-          </label>
+          </div>
 
           <div class="opt opt-wide">
             <span class="opt-label">Audio bitrate</span>

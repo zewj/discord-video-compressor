@@ -1,7 +1,7 @@
 {
   "name": "discord-video-compressor",
   "productName": "Discord Video Compressor",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "Compress videos under Discord upload limits",
   "main": "main.js",
   "author": "Neko",
@@ -12,7 +12,8 @@
     "build:win-arm64": "electron-packager . \"Discord Video Compressor\" --platform=win32 --arch=arm64 --out=dist --overwrite --asar --icon=build/icon.ico --extra-resource=build/icon.ico --ignore=\"^/(dist|build/(?!icon\\.(ico|png)$|icon-256\\.png$)|.github)($|/)\"",
     "build:win-portable": "powershell -NoProfile -Command \"Compress-Archive -Path 'dist/Discord Video Compressor-win32-x64' -DestinationPath 'dist/DiscordVideoCompressor-portable-x64.zip' -CompressionLevel Optimal -Force\"",
     "build:linux": "electron-packager . \"discord-video-compressor\" --platform=linux --arch=x64 --out=dist --overwrite --asar --icon=build/icon-256.png --extra-resource=build/icon-256.png --ignore=\"^/(dist|build/(?!icon\\.(ico|png)$|icon-256\\.png$)|.github)($|/)\"",
-    "build:all": "npm run build:win && npm run build:win-arm64 && npm run build:linux"
+    "build:linux-arm64": "electron-packager . \"discord-video-compressor\" --platform=linux --arch=arm64 --out=dist --overwrite --asar --icon=build/icon-256.png --extra-resource=build/icon-256.png --ignore=\"^/(dist|build/(?!icon\\.(ico|png)$|icon-256\\.png$)|.github)($|/)\"",
+    "build:all": "npm run build:win && npm run build:win-arm64 && npm run build:linux && npm run build:linux-arm64"
   },
   "devDependencies": {
     "electron": "^33.0.0",

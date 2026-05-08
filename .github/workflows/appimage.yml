@@ -1,17 +1,16 @@
-# Builds an AppImage on tag push (e.g. v1.6.0) and attaches it to the
-# corresponding GitHub Release. Runs on a real Linux runner so we can use
-# appimagetool natively — way easier than cross-building from Windows.
+# Builds AppImages for x86_64 and aarch64 on tag push (e.g. v1.8.0) and
+# attaches both to the corresponding GitHub Release. The aarch64 job uses
+# GitHub's native ARM Linux runner — no QEMU needed.
 
 name: AppImage
 
 on:
   push:
     tags: [ 'v*' ]
-  # Allow re-running manually if a release exists but the AppImage failed.
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to attach the AppImage to (e.g. v1.6.0)'
+        description: 'Existing tag to attach the AppImage to (e.g. v1.8.0)'
         required: true
 
 permissions:
@@ -19,7 +18,19 @@ permissions:
 
 jobs:
   appimage:
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-22.04
+            appimage_arch: x86_64
+            appimagetool: appimagetool-x86_64.AppImage
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+            appimage_arch: aarch64
+            appimagetool: appimagetool-aarch64.AppImage
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,14 +47,19 @@ jobs:
         run: npm ci
 
       - name: Package Linux build
-        run: npm run build:linux
+        run: |
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            npm run build:linux-arm64
+          else
+            npm run build:linux
+          fi
 
       - name: Stage AppDir
         env:
-          APP_VERSION: ${{ github.ref_name || inputs.tag }}
+          ARCH: ${{ matrix.arch }}
         run: |
           set -e
-          BUILD_DIR="dist/discord-video-compressor-linux-x64"
+          BUILD_DIR="dist/discord-video-compressor-linux-${ARCH}"
           APPDIR="dist/AppDir"
 
           rm -rf "$APPDIR"
@@ -51,16 +67,12 @@ jobs:
           mkdir -p "$APPDIR/usr/share/applications"
           mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 
-          # Copy the entire packaged folder under usr/bin/ so resources/ etc.
-          # stay co-located with the binary.
           cp -r "$BUILD_DIR/." "$APPDIR/usr/bin/"
 
-          # Icon (required by AppImage).
           cp build/icon-256.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/discord-video-compressor.png"
           cp build/icon-256.png "$APPDIR/discord-video-compressor.png"
           cp build/icon-256.png "$APPDIR/.DirIcon"
 
-          # Desktop entry.
           cat > "$APPDIR/usr/share/applications/discord-video-compressor.desktop" <<EOF
           [Desktop Entry]
           Type=Application
@@ -72,7 +84,6 @@ jobs:
           EOF
           cp "$APPDIR/usr/share/applications/discord-video-compressor.desktop" "$APPDIR/discord-video-compressor.desktop"
 
-          # AppRun entrypoint — the script appimagetool invokes.
           cat > "$APPDIR/AppRun" <<'EOF'
           #!/bin/sh
           HERE="$(dirname "$(readlink -f "$0")")"
@@ -84,19 +95,25 @@ jobs:
       - name: Build AppImage
         run: |
           set -e
-          # appimagetool wants FUSE; on GH runners we fall back to extract+run.
           curl -L -o appimagetool \
-            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+            "https://github.com/AppImage/AppImageKit/releases/download/continuous/${{ matrix.appimagetool }}"
           chmod +x appimagetool
           ./appimagetool --appimage-extract
           mkdir -p dist
-          ARCH=x86_64 ./squashfs-root/AppRun \
+          ARCH=${{ matrix.appimage_arch }} ./squashfs-root/AppRun \
             dist/AppDir \
-            "dist/DiscordVideoCompressor-${{ github.ref_name }}-x86_64.AppImage"
+            "dist/DiscordVideoCompressor-${{ github.ref_name }}-${{ matrix.appimage_arch }}.AppImage"
+
+      - name: Tarball Linux build
+        run: |
+          tar -czf "dist/discord-video-compressor-linux-${{ matrix.arch }}.tar.gz" \
+            -C dist "discord-video-compressor-linux-${{ matrix.arch }}"
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/DiscordVideoCompressor-*.AppImage
+          files: |
+            dist/DiscordVideoCompressor-*.AppImage
+            dist/discord-video-compressor-linux-${{ matrix.arch }}.tar.gz
           tag_name: ${{ inputs.tag || github.ref_name }}
           fail_on_unmatched_files: true
