@@ -37,9 +37,10 @@ If the chosen target leaves less than ~100 kbps for video, the app refuses to en
 ## Features
 
 ### Workflow
-- **Batch queue** — drop or pick multiple files, encode them sequentially. Each row shows live status (queued / encoding / done / failed) with per-item progress, "Folder", "Copy", and "Remove" actions.
+- **Batch queue** — drop or pick multiple files. Encodes run with configurable parallelism (1–4 jobs) — sequential by default for stability, bumped up for multi-core machines doing CPU encodes. Each row shows live status (queued / encoding / done / failed) with per-item progress, "Folder", "Copy", and "Remove" actions.
 - **Visual trim** — select a clip and a video preview appears in the Encoding tab with a draggable timeline. Two handles set start/end; a play button loops within the trim range. Numerical mm:ss inputs still work for precision.
 - **Copy to clipboard** — paste the compressed file straight into Discord. Uses the OS file clipboard (`Set-Clipboard -Path` on Windows, `wl-copy` / `xclip` on Linux).
+- **Persistent settings** — tier, mode, preset, audio bitrate, custom resolution/framerate, mute, burn-subs, CRF, concurrency, and the Custom MB value all persist across launches via `localStorage`.
 
 ### Encoding
 - **Hardware acceleration** — auto-probes ffmpeg's encoder list at startup and lets you choose:
@@ -53,8 +54,10 @@ If the chosen target leaves less than ~100 kbps for video, the app refuses to en
   - **Quality (CRF)** — quality-driven, ignores tier as a hard cap. Slider 0–100% maps to per-codec CRF/CQ/QP. Use for "make this look as good as you can, file size is whatever."
 - **Quality presets**: Fastest / Balanced / Max quality. Maps to per-encoder presets (`p1..p7` for NVENC, `veryfast..veryslow` for libx264, `0..13` for SVT-AV1, etc.)
 - **Trim**: visual timeline with draggable handles + numerical inputs (`mm:ss` / `hh:mm:ss` / decimal seconds). Bitrate is recomputed for the trimmed window.
+- **Audio bitrate slider** (32–256 kbps) and **Keep original audio** passthrough — lets you remux the source audio without re-encoding when the codec is compatible with the chosen container (AAC/AC3/EAC3/MP3/ALAC/Opus/FLAC into MP4, Opus/Vorbis into WebM).
 - **Strip audio** checkbox — uses `-an`, reallocates the audio budget to video. Useful for very short clips.
-- **Burn in subtitles** checkbox — runs the source's first subtitle stream through libass and bakes it into the encoded video. Discord's inline preview won't render embedded subs, so burn-in is what most people actually want.
+- **Burn in subtitles** checkbox — bakes a subtitle stream into the encoded video via libass. When the source has multiple subtitle tracks a track-picker dropdown appears (it's hidden when there's only one).
+- **Custom resolution / framerate** — optional overrides that beat the auto-downscale heuristic. Leave blank for default behaviour.
 - **Source metadata** displayed inline after picking a video: duration, resolution, codec(s), file size.
 
 ### UI / UX
@@ -112,12 +115,21 @@ Works automatically when available; the codec dropdown shows whatever ffmpeg det
 
 ### Windows
 
+Two options:
+
+**Installer** (recommended):
 1. Download `DiscordVideoCompressor-Setup.exe` from the [latest release](https://github.com/zewj/discord-video-compressor/releases/latest).
 2. Run it. Accept the UAC prompt.
 3. Pick an install folder (defaults to `C:\Program Files\DiscordVideoCompressor`) and click through. ffmpeg downloads automatically here if you don't already have it.
 4. Launch via the Start Menu, Desktop shortcut, or the Finish-page checkbox.
 
-To uninstall: Settings → Apps, or run `Uninstall.exe` from the install folder.
+**Portable** (no admin, USB-friendly):
+1. Download `DiscordVideoCompressor-portable-x64.zip`.
+2. Extract anywhere; run `Discord Video Compressor.exe` directly. Bring your own ffmpeg (on PATH or at `C:\ffmpeg\bin`).
+
+**ARM64 build** (Snapdragon laptops): use `discord-video-compressor-win32-arm64.zip` if available on the release.
+
+To uninstall the installer version: Settings → Apps, or run `Uninstall.exe` from the install folder.
 
 ### Linux
 

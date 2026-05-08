@@ -42,7 +42,7 @@ function sampleStats() {
     memPercent: (used / total) * 100,
     cpuModel: os.cpus()[0]?.model || 'CPU',
     cpuCores: os.cpus().length,
-    activeFfmpeg: activeProcs.length,
+    activeFfmpeg: totalActiveProcs(),
   };
 }
 
@@ -125,26 +125,44 @@ function appendLog(s) {
 }
 
 // ---------- compression state ----------
-let activeProcs = [];
-let cancelled = false;
-// Toggled from the renderer via 'stats:setEnabled' — turns off the 1Hz
-// system stats push when the user isn't on the System tab.
-let statsEnabled = true;
-function killActive() {
-  cancelled = true;
-  for (const p of activeProcs) {
-    try { p.kill(); } catch (_) {}
-  }
-  activeProcs = [];
+// Each in-flight encode lives in its own job context. With concurrency > 1
+// in the renderer queue, multiple compress() calls run simultaneously and
+// each needs isolated cancel state + its own Set of child processes so a
+// single Cancel doesn't accidentally kill an unrelated job.
+const jobs = new Map(); // jobId -> { procs: Set<ChildProcess>, cancelled: boolean }
+let nextJobSeq = 0;
+let statsEnabled = true; // toggled by renderer when System tab visibility changes
+
+function makeJobId(seed) {
+  nextJobSeq++;
+  return seed || `j-${Date.now().toString(36)}-${nextJobSeq}`;
+}
+function getJob(jobId) {
+  let j = jobs.get(jobId);
+  if (!j) { j = { procs: new Set(), cancelled: false }; jobs.set(jobId, j); }
+  return j;
+}
+function cancelJob(jobId) {
+  const j = jobs.get(jobId);
+  if (!j) return;
+  j.cancelled = true;
+  for (const p of j.procs) { try { p.kill(); } catch (_) {} }
+}
+function cancelAllJobs() {
+  for (const id of jobs.keys()) cancelJob(id);
+}
+function totalActiveProcs() {
+  let n = 0;
+  for (const j of jobs.values()) n += j.procs.size;
+  return n;
 }
 
 function probeVideo(input) {
   return new Promise((resolve, reject) => {
-    const args = [
-      '-v', 'error',
-      '-show_entries', 'stream=width,height,codec_type,codec_name:format=duration,size,bit_rate',
-      '-of', 'json', input,
-    ];
+    // -show_streams gives full per-stream metadata (codec, language tags,
+    // dispositions). The renderer needs this for the audio bitrate hint
+    // and the subtitle track dropdown.
+    const args = ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', input];
     const p = spawn(FFPROBE, args, { windowsHide: true });
     let out = '', err = '';
     p.stdout.on('data', d => out += d);
@@ -153,16 +171,28 @@ function probeVideo(input) {
       if (code !== 0) return reject(new Error(err || `ffprobe exited ${code}`));
       try {
         const j = JSON.parse(out);
-        const v = (j.streams || []).find(s => s.codec_type === 'video');
-        const a = (j.streams || []).find(s => s.codec_type === 'audio');
+        const all = j.streams || [];
+        const v = all.find(s => s.codec_type === 'video');
+        const audios = all.filter(s => s.codec_type === 'audio');
+        const subs = all.filter(s => s.codec_type === 'subtitle');
         if (!v) return reject(new Error('No video stream found.'));
+        const stream2tag = (s, i) => ({
+          index: i,
+          codec: s.codec_name,
+          language: s.tags?.language || null,
+          title: s.tags?.title || null,
+          channels: s.channels || null,
+          bitRate: parseInt(s.bit_rate || '0', 10) || null,
+        });
         resolve({
           duration: parseFloat(j.format.duration),
           width: v.width,
           height: v.height,
           videoCodec: v.codec_name,
-          audioCodec: a ? a.codec_name : null,
-          hasAudio: !!a,
+          audioCodec: audios[0]?.codec_name || null,
+          hasAudio: audios.length > 0,
+          audioStreams: audios.map(stream2tag),
+          subtitleStreams: subs.map(stream2tag),
           bytes: parseInt(j.format.size || '0', 10),
           bitRate: parseInt(j.format.bit_rate || '0', 10),
         });
@@ -338,11 +368,12 @@ function videoCodecArgs(codec, presetLevel, videoKbps) {
   return args;
 }
 
-function runFfmpeg(args, duration, onProgress) {
+function runFfmpeg(args, duration, jobId, onProgress) {
   return new Promise((resolve, reject) => {
-    appendLog(`\n$ ffmpeg ${args.map(a => /\s/.test(a) ? `"${a}"` : a).join(' ')}\n`);
+    const job = getJob(jobId);
+    appendLog(`\n[${jobId}] $ ffmpeg ${args.map(a => /\s/.test(a) ? `"${a}"` : a).join(' ')}\n`);
     const p = spawn(FFMPEG, args, { windowsHide: true });
-    activeProcs.push(p);
+    job.procs.add(p);
     let stderr = '';
     p.stderr.on('data', d => { const s = d.toString(); stderr += s; appendLog(s); });
     let lastSpeed = null;
@@ -360,27 +391,43 @@ function runFfmpeg(args, duration, onProgress) {
     });
     p.on('error', reject);
     p.on('close', code => {
-      activeProcs = activeProcs.filter(x => x !== p);
-      if (cancelled) return reject(new Error('Cancelled'));
+      job.procs.delete(p);
+      if (job.cancelled) return reject(new Error('Cancelled'));
       if (code !== 0) return reject(new Error(stderr || `ffmpeg exited ${code}`));
       resolve();
     });
   });
 }
 
+// Decide whether the source's audio codec can be remuxed straight into the
+// chosen container without re-encoding. ffmpeg muxer support varies; this
+// list covers the common-case codecs each muxer accepts.
+function audioCompatibleWithContainer(codec, container) {
+  if (!codec) return false;
+  if (container === 'mp4')  return ['aac','ac3','eac3','mp3','alac','opus','flac'].includes(codec);
+  if (container === 'webm') return ['opus','vorbis'].includes(codec);
+  return false;
+}
+
 async function compress(opts, send) {
   let {
     input, output, targetMb,
-    audioKbps, removeAudio = false,
+    audioKbps, removeAudio = false, audioCopy = false,
     codec = 'libx264',
     presetLevel = 'balanced',
     mode = 'twopass',                       // 'twopass' | 'fast' | 'crf'
     trimStart = 0, trimEnd = null,
-    crf = 60,                               // 0..100 quality slider; only used when mode === 'crf'
-    burnSubtitles = false,
+    crf = 60,
+    burnSubtitles = false, subtitleTrack = 0,
+    customResolution = null,                // "1280x720" or "1280:720" or null
+    customFramerate = null,                 // number or null
+    jobId,
   } = opts;
+  jobId = makeJobId(jobId);
+  // Per-progress-event payload includes jobId so multiple parallel jobs
+  // can each route to their own queue row in the renderer.
+  const sendProgress = (data) => send('progress', { ...data, jobId });
 
-  cancelled = false;
   const info = await probeVideo(input);
   if (!info.duration || info.duration <= 0) throw new Error('Could not read duration.');
 
@@ -415,21 +462,32 @@ async function compress(opts, send) {
     );
   }
 
-  // Auto-downscaling is keyed off the target tier; doesn't apply in CRF mode.
-  const scaleH = isCrfMode ? null : pickScale(info.height, targetMb);
-  // Build the -vf filter chain. For VAAPI we still let ffmpeg do CPU-side
-  // scaling and then upload the frame to GPU for encoding via format+hwupload.
-  let vfChain = scaleH ? `scale=-2:${scaleH}` : '';
+  // Resolution: explicit override beats auto-downscale; auto-downscale only
+  // applies when there's no custom resolution AND we're in tier-targeted mode.
+  let scaleFilter = '';
+  if (customResolution) {
+    const m = String(customResolution).match(/^(\d+)\s*[x:×]\s*(\d+)$/);
+    if (m) scaleFilter = `scale=${m[1]}:${m[2]}`;
+  } else {
+    const scaleH = isCrfMode ? null : pickScale(info.height, targetMb);
+    if (scaleH) scaleFilter = `scale=-2:${scaleH}`;
+  }
+  let vfChain = scaleFilter;
   // Burn-in subtitles BEFORE any HW upload step so libass renders to CPU
   // memory and the result becomes part of the frames being sent to the
-  // encoder. si=0 picks the first subtitle stream.
+  // encoder. subtitleTrack lets the user pick if there's more than one.
   if (burnSubtitles) {
-    const subFilter = `subtitles=${ffmpegFilterPath(input)}:si=0`;
+    const trackIdx = Math.max(0, parseInt(subtitleTrack, 10) || 0);
+    const subFilter = `subtitles=${ffmpegFilterPath(input)}:si=${trackIdx}`;
     vfChain = vfChain ? `${subFilter},${vfChain}` : subFilter;
   }
   const vaapiSuffix = vaapiVfSuffix(codec);
   if (vaapiSuffix) vfChain = vfChain ? `${vfChain},${vaapiSuffix}` : vaapiSuffix;
   const vf = vfChain || null;
+
+  // Custom framerate: applied as -r at output position so it overrides
+  // the source rate without resampling on input.
+  const fpsArgs = customFramerate ? ['-r', String(customFramerate)] : [];
 
   // Override the output extension if the user picked VP9 (which lives in
   // WebM rather than MP4). Doing this in main rather than the renderer
@@ -468,6 +526,20 @@ async function compress(opts, send) {
   // baseline that maximises playback compatibility.
   if (!isVaapiCodec(codec)) videoArgs.push('-pix_fmt', 'yuv420p');
 
+  // ---------- audio handling ----------
+  const cont = containerFor(codec);
+  const fallbackACodec = cont === 'webm' ? 'libopus' : 'aac';
+  let audioTail;
+  if (removeAudio) {
+    audioTail = ['-an'];
+  } else if (audioCopy && audioCompatibleWithContainer(info.audioCodec, cont)) {
+    // Pass-through: no re-encode, original audio stream is remuxed.
+    audioTail = ['-c:a', 'copy'];
+  } else {
+    audioTail = ['-c:a', fallbackACodec, '-b:a', `${audioKbps}k`];
+  }
+  const muxFlags = cont === 'mp4' ? ['-movflags', '+faststart'] : [];
+
   if (wantTwoPass) {
     const logPrefix = path.join(path.dirname(output),
                                 path.parse(output).name + '_2pass');
@@ -475,35 +547,27 @@ async function compress(opts, send) {
     // -f null discards output without invoking a real muxer, so it's safe
     // for any codec (libvpx-vp9 / svt-av1 don't fit into an mp4 muxer).
     const pass1 = [
-      ...baseInput, ...videoArgs,
+      ...baseInput, ...videoArgs, ...fpsArgs,
       '-pass', '1', '-passlogfile', logPrefix,
       '-an', '-f', 'null', nullSink,
     ];
-    // Audio codec depends on the container.
-    const audioCodec = containerFor(codec) === 'webm' ? 'libopus' : 'aac';
-    const pass2Tail = removeAudio
-      ? ['-an']
-      : ['-c:a', audioCodec, '-b:a', `${audioKbps}k`];
-    // +faststart only applies to MP4-family muxers; harmless flag elsewhere
-    // but the WebM muxer ignores it anyway.
-    const muxFlags = containerFor(codec) === 'mp4' ? ['-movflags', '+faststart'] : [];
     const pass2 = [
-      ...baseInput, ...videoArgs,
+      ...baseInput, ...videoArgs, ...fpsArgs,
       '-pass', '2', '-passlogfile', logPrefix,
-      ...pass2Tail,
+      ...audioTail,
       ...muxFlags,
       output,
     ];
 
-    send('progress', { phase: 'Pass 1 of 2', percent: 0, currentSec: 0, durationSec: effectiveDuration });
-    await runFfmpeg(pass1, effectiveDuration, (frac, sec, speed) => {
-      send('progress', { phase: 'Pass 1 of 2', percent: frac * 50, currentSec: sec, durationSec: effectiveDuration, speed });
+    sendProgress({ phase: 'Pass 1 of 2', percent: 0, currentSec: 0, durationSec: effectiveDuration });
+    await runFfmpeg(pass1, effectiveDuration, jobId, (frac, sec, speed) => {
+      sendProgress({ phase: 'Pass 1 of 2', percent: frac * 50, currentSec: sec, durationSec: effectiveDuration, speed });
     });
-    if (cancelled) throw new Error('Cancelled');
+    if (getJob(jobId).cancelled) throw new Error('Cancelled');
 
-    send('progress', { phase: 'Pass 2 of 2', percent: 50, currentSec: 0, durationSec: effectiveDuration });
-    await runFfmpeg(pass2, effectiveDuration, (frac, sec, speed) => {
-      send('progress', { phase: 'Pass 2 of 2', percent: 50 + frac * 50, currentSec: sec, durationSec: effectiveDuration, speed });
+    sendProgress({ phase: 'Pass 2 of 2', percent: 50, currentSec: 0, durationSec: effectiveDuration });
+    await runFfmpeg(pass2, effectiveDuration, jobId, (frac, sec, speed) => {
+      sendProgress({ phase: 'Pass 2 of 2', percent: 50 + frac * 50, currentSec: sec, durationSec: effectiveDuration, speed });
     });
 
     // Cleanup two-pass logs.
@@ -514,27 +578,25 @@ async function compress(opts, send) {
       }
     }
   } else {
-    // Single-pass.
-    const audioCodec = containerFor(codec) === 'webm' ? 'libopus' : 'aac';
-    const audioTail = removeAudio
-      ? ['-an']
-      : ['-c:a', audioCodec, '-b:a', `${audioKbps}k`];
-    const muxFlags = containerFor(codec) === 'mp4' ? ['-movflags', '+faststart'] : [];
+    // Single-pass (Fast or CRF).
     const args = [
-      ...baseInput, ...videoArgs,
+      ...baseInput, ...videoArgs, ...fpsArgs,
       ...audioTail,
       ...muxFlags,
       output,
     ];
-    const phase = isCpuCodec(codec) ? 'Encoding (1 pass)' : 'Encoding (HW accel)';
-    send('progress', { phase, percent: 0, currentSec: 0, durationSec: effectiveDuration });
-    await runFfmpeg(args, effectiveDuration, (frac, sec, speed) => {
-      send('progress', { phase, percent: frac * 100, currentSec: sec, durationSec: effectiveDuration, speed });
+    const phase = isCrfMode
+      ? 'Encoding (CRF)'
+      : (isCpuCodec(codec) ? 'Encoding (1 pass)' : 'Encoding (HW accel)');
+    sendProgress({ phase, percent: 0, currentSec: 0, durationSec: effectiveDuration });
+    await runFfmpeg(args, effectiveDuration, jobId, (frac, sec, speed) => {
+      sendProgress({ phase, percent: frac * 100, currentSec: sec, durationSec: effectiveDuration, speed });
     });
   }
 
   const sizeMb = fs.statSync(output).size / (1024 * 1024);
-  return { sizeMb, output };
+  jobs.delete(jobId);
+  return { sizeMb, output, jobId };
 }
 
 // ---------- update checker ----------
@@ -639,18 +701,22 @@ function registerIpc(win) {
   });
 
   ipcMain.handle('compress:start', async (_e, opts) => {
+    // Pre-allocate the jobId so the renderer can match progress events
+    // even before compress() returns.
+    const jobId = makeJobId(opts.jobId);
     try {
-      // compress() may rewrite the output extension when a codec demands a
-      // specific container, so use what it returns rather than opts.output.
-      const { sizeMb, output } = await compress(opts, send);
-      return { ok: true, sizeMb, output };
+      const r = await compress({ ...opts, jobId }, send);
+      return { ok: true, sizeMb: r.sizeMb, output: r.output, jobId };
     } catch (err) {
-      return { ok: false, error: err.message || String(err) };
+      jobs.delete(jobId);
+      return { ok: false, error: err.message || String(err), jobId };
     }
   });
 
-  ipcMain.handle('compress:cancel', () => {
-    killActive();
+  // Pass a jobId to cancel just that job; omit to cancel everything.
+  ipcMain.handle('compress:cancel', (_e, jobId) => {
+    if (jobId) cancelJob(jobId);
+    else cancelAllJobs();
     return true;
   });
 
@@ -763,7 +829,7 @@ function createWindow() {
 
   win.on('closed', () => {
     clearInterval(statsTimer);
-    killActive();
+    cancelAllJobs();
   });
 
   // Background tasks.

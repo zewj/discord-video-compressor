@@ -184,7 +184,7 @@
                 <span class="unit">%</span>
               </div>
             </div>
-            <span class="opt-hint">100 = visually lossless · file size will be whatever it is</span>
+            <span class="opt-hint" id="crf-quality-label">~ Good · file size will be whatever it is</span>
           </div>
 
           <div class="opt opt-wide">
@@ -235,8 +235,57 @@
               <span class="check-box" aria-hidden="true"></span>
               <span>Burn in subtitles</span>
             </label>
-            <span class="opt-hint" id="subs-hint">Reads first subtitle stream from the source.</span>
+            <select id="sub-track" class="select select-tight" hidden></select>
+            <span class="opt-hint" id="subs-hint">Source has no subtitle tracks.</span>
           </label>
+
+          <div class="opt opt-wide">
+            <span class="opt-label">Audio bitrate</span>
+            <div class="slider-row">
+              <input type="range" id="audio-kbps-slider" class="slider"
+                     min="32" max="256" step="8" value="128" />
+              <div class="slider-value">
+                <span id="audio-kbps-value">128</span>
+                <span class="unit">kbps</span>
+              </div>
+            </div>
+            <label class="check check-tight">
+              <input type="checkbox" id="audio-copy" />
+              <span class="check-box" aria-hidden="true"></span>
+              <span>Keep original audio (passthrough when compatible)</span>
+            </label>
+            <span class="opt-hint" id="audio-hint">Tier defaults: No Nitro 64, Basic 96, Boost/Nitro 128.</span>
+          </div>
+
+          <label class="opt">
+            <span class="opt-label">Custom resolution
+              <span class="dim-hint">(optional)</span></span>
+            <input id="custom-res" type="text" class="input-time"
+                   placeholder="e.g. 1280x720" style="width: 140px" />
+            <span class="opt-hint">Overrides auto-downscale. Leave blank for default.</span>
+          </label>
+
+          <label class="opt">
+            <span class="opt-label">Custom framerate
+              <span class="dim-hint">(optional)</span></span>
+            <input id="custom-fps" type="number" class="input-time"
+                   min="1" max="120" step="1" placeholder="e.g. 30" style="width: 100px" />
+            <span class="opt-hint">Force output framerate. Leave blank to keep source.</span>
+          </label>
+
+          <div class="opt opt-wide">
+            <span class="opt-label">Max concurrent encodes
+              <span class="dim-hint">(queue parallelism)</span></span>
+            <div class="slider-row">
+              <input type="range" id="concurrency-slider" class="slider"
+                     min="1" max="4" step="1" value="1" />
+              <div class="slider-value">
+                <span id="concurrency-value">1</span>
+                <span class="unit">jobs</span>
+              </div>
+            </div>
+            <span class="opt-hint">Higher = faster on multi-core systems but heavier load. Stick with 1 for HW encoders sharing a single GPU.</span>
+          </div>
         </div>
       </section>
 

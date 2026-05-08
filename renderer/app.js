@@ -85,8 +85,55 @@ const els = {
   trimHandleStart: document.getElementById('trim-handle-start'),
   trimHandleEnd: document.getElementById('trim-handle-end'),
 
+  audioKbpsSlider: document.getElementById('audio-kbps-slider'),
+  audioKbpsValue: document.getElementById('audio-kbps-value'),
+  audioCopy: document.getElementById('audio-copy'),
+  audioHint: document.getElementById('audio-hint'),
+  subTrack: document.getElementById('sub-track'),
+  customRes: document.getElementById('custom-res'),
+  customFps: document.getElementById('custom-fps'),
+  concurrencySlider: document.getElementById('concurrency-slider'),
+  concurrencyValue: document.getElementById('concurrency-value'),
+  crfQualityLabel: document.getElementById('crf-quality-label'),
+
   dropOverlay: document.getElementById('drop-overlay'),
 };
+
+// ---------- Generic settings persistence ----------
+// Tracks a few user choices across launches without writing a file. Each
+// call returns the saved value (or default) and registers a setter that
+// updates localStorage. Keeps the per-control wiring concise.
+function persistedValue(key, defaultValue) {
+  let cur;
+  try { cur = localStorage.getItem(key); } catch (_) { cur = null; }
+  if (cur === null || cur === undefined) cur = defaultValue;
+  return {
+    get: () => cur,
+    set: (v) => {
+      cur = v;
+      try { localStorage.setItem(key, String(v)); } catch (_) {}
+    },
+  };
+}
+function persistedBool(key, def) {
+  const p = persistedValue(key, def ? '1' : '0');
+  return { get: () => p.get() === '1', set: (b) => p.set(b ? '1' : '0') };
+}
+function persistedInt(key, def) {
+  const p = persistedValue(key, String(def));
+  return { get: () => parseInt(p.get(), 10) || def, set: (n) => p.set(String(n)) };
+}
+const savedMode        = persistedValue('dvc.mode', 'fast');
+const savedPreset      = persistedValue('dvc.preset', 'balanced');
+const savedTier        = persistedValue('dvc.tier', 'free');
+const savedMute        = persistedBool('dvc.mute', false);
+const savedBurnSubs    = persistedBool('dvc.burnSubs', false);
+const savedCrf         = persistedInt('dvc.crf', 60);
+const savedAudioKbps   = persistedInt('dvc.audioKbps', 128);
+const savedAudioCopy   = persistedBool('dvc.audioCopy', false);
+const savedConcurrency = persistedInt('dvc.concurrency', 1);
+const savedCustomRes   = persistedValue('dvc.customRes', '');
+const savedCustomFps   = persistedValue('dvc.customFps', '');
 
 // ---------- Tabs ----------
 const TAB_KEY = 'dvc.tab';
@@ -199,10 +246,10 @@ function toast(kind, title, body, action) {
 // QUEUE
 // ===========================================================================
 
-let queue = [];           // [{ id, input, output, status, progress, sizeMb?, error?, info? }]
+let queue = [];           // [{ id, jobId?, input, output, status, progress, sizeMb?, error?, info? }]
 let nextId = 1;
-let runningId = null;     // id of the currently-encoding item, or null
 let queueCancelled = false;
+const anyEncoding = () => queue.some(q => q.status === 'encoding');
 
 function basename(p) {
   const slash = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'));
@@ -245,13 +292,14 @@ async function enqueue(paths) {
 }
 
 function removeQueueItem(id) {
-  if (id === runningId) return; // can't remove the running one; cancel instead
+  const item = queue.find(q => q.id === id);
+  if (!item || item.status === 'encoding') return; // can't remove an active encode
   queue = queue.filter(q => q.id !== id);
   renderQueue();
 }
 
 function clearQueue() {
-  if (runningId !== null) return;
+  if (anyEncoding()) return;
   queue = [];
   renderQueue();
   unloadTrimPreview();
@@ -261,7 +309,7 @@ function renderQueue() {
   els.queueList.innerHTML = '';
   els.queueList.hidden = queue.length === 0;
   els.emptyHint.hidden = queue.length > 0;
-  els.clearQueue.disabled = queue.length === 0 || runningId !== null;
+  els.clearQueue.disabled = queue.length === 0 || anyEncoding();
   els.queueCount.hidden = queue.length === 0;
   els.queueCount.textContent = String(queue.length);
 
@@ -384,8 +432,9 @@ window.addEventListener('drop', async (e) => {
 // CODEC / MODE / PRESET / CRF / TRIM / SUBTITLES
 // ===========================================================================
 
-let mode = 'fast';
-let presetLevel = 'balanced';
+let mode = savedMode.get();
+let presetLevel = savedPreset.get();
+let concurrency = Math.max(1, Math.min(4, savedConcurrency.get()));
 
 function populateCodecs(encoders) {
   els.codecSelect.innerHTML = '';
@@ -462,6 +511,7 @@ document.querySelectorAll('.seg-btn[data-mode]').forEach(b => {
   b.addEventListener('click', () => {
     if (b.disabled) return;
     mode = b.dataset.mode;
+    savedMode.set(mode);
     document.querySelectorAll('.seg-btn[data-mode]').forEach(x =>
       x.classList.toggle('active', x === b));
     els.crfRow.hidden = mode !== 'crf';
@@ -470,15 +520,88 @@ document.querySelectorAll('.seg-btn[data-mode]').forEach(b => {
 document.querySelectorAll('.seg-btn[data-preset]').forEach(b => {
   b.addEventListener('click', () => {
     presetLevel = b.dataset.preset;
+    savedPreset.set(presetLevel);
     document.querySelectorAll('.seg-btn[data-preset]').forEach(x =>
       x.classList.toggle('active', x === b));
   });
 });
 
-// CRF slider value display.
+// Per-codec CRF rough-quality table. The slider is 0..100 normalised; the
+// underlying CRF values shift by codec, but the perceptual buckets line up
+// at the same percentages because qualityArgsFor uses linear lerp on each
+// codec's "low quality" → "high quality" range.
+function crfQualityLabel(pct) {
+  if (pct >= 85) return '~ Visually lossless';
+  if (pct >= 70) return '~ Very good';
+  if (pct >= 50) return '~ Good';
+  if (pct >= 30) return '~ Acceptable';
+  return '~ Low quality';
+}
 els.crfSlider.addEventListener('input', () => {
   els.crfValue.textContent = els.crfSlider.value;
+  const pct = parseInt(els.crfSlider.value, 10) || 0;
+  els.crfQualityLabel.textContent = `${crfQualityLabel(pct)} · file size will be whatever it is`;
+  savedCrf.set(pct);
 });
+
+// ---------- Audio bitrate / passthrough ----------
+function refreshAudioHint() {
+  if (els.audioCopy.checked) {
+    els.audioHint.textContent = 'Source audio will be copied without re-encoding when possible.';
+    els.audioKbpsSlider.disabled = true;
+  } else {
+    els.audioHint.textContent = `Tier defaults: No Nitro 64, Basic 96, Boost/Nitro 128.`;
+    els.audioKbpsSlider.disabled = false;
+  }
+}
+els.audioKbpsSlider.addEventListener('input', () => {
+  els.audioKbpsValue.textContent = els.audioKbpsSlider.value;
+  savedAudioKbps.set(parseInt(els.audioKbpsSlider.value, 10));
+  // Repaint slider gradient.
+  const pct = (els.audioKbpsSlider.value - 32) / (256 - 32) * 100;
+  els.audioKbpsSlider.style.setProperty('--filled', `${pct}%`);
+});
+els.audioCopy.addEventListener('change', () => {
+  savedAudioCopy.set(els.audioCopy.checked);
+  refreshAudioHint();
+});
+
+// ---------- Custom resolution / framerate ----------
+els.customRes.addEventListener('change', () => savedCustomRes.set(els.customRes.value.trim()));
+els.customFps.addEventListener('change', () => savedCustomFps.set(els.customFps.value.trim()));
+
+// ---------- Concurrency ----------
+els.concurrencySlider.addEventListener('input', () => {
+  concurrency = parseInt(els.concurrencySlider.value, 10) || 1;
+  els.concurrencyValue.textContent = String(concurrency);
+  savedConcurrency.set(concurrency);
+  const pct = (concurrency - 1) / 3 * 100;
+  els.concurrencySlider.style.setProperty('--filled', `${pct}%`);
+});
+
+// ---------- Subtitle track dropdown ----------
+function populateSubtitleTracks(streams) {
+  els.subTrack.innerHTML = '';
+  if (!streams || streams.length === 0) {
+    els.subTrack.hidden = true;
+    els.subsHint.textContent = 'Source has no subtitle tracks.';
+    els.burnSubs.disabled = true;
+    return;
+  }
+  for (const s of streams) {
+    const opt = document.createElement('option');
+    opt.value = String(s.index);
+    const lang = s.language ? ` [${s.language}]` : '';
+    const title = s.title ? ` — ${s.title}` : '';
+    opt.textContent = `Track ${s.index + 1} (${s.codec})${lang}${title}`;
+    els.subTrack.appendChild(opt);
+  }
+  els.subTrack.hidden = streams.length < 2; // only show selector if there's a choice
+  els.burnSubs.disabled = false;
+  els.subsHint.textContent = streams.length === 1
+    ? `1 subtitle track found (${streams[0].codec}).`
+    : `${streams.length} subtitle tracks found — pick one above.`;
+}
 
 // ---------- Trim ----------
 function parseTime(s) {
@@ -540,6 +663,10 @@ function loadTrimPreview(item) {
     trimDuration = item.info.duration;
     document.body.dataset.srcDuration = String(trimDuration);
     updateTrimHint();
+  }
+  // Populate subtitle track selector from probe data.
+  if (item.info && item.info.subtitleStreams) {
+    populateSubtitleTracks(item.info.subtitleStreams);
   }
   // Reset trim handles to full clip.
   trimStartPct = 0;
@@ -650,6 +777,12 @@ els.trimTrack.addEventListener('click', (e) => {
   els.trimVideo.currentTime = Math.max(0, Math.min(trimDuration, pct * trimDuration));
 });
 
+// ---------- Persist mute / burn-subs / tier on change ----------
+els.muteAudio.addEventListener('change', () => savedMute.set(els.muteAudio.checked));
+els.burnSubs.addEventListener('change', () => savedBurnSubs.set(els.burnSubs.checked));
+document.querySelectorAll('input[name="tier"]').forEach(r =>
+  r.addEventListener('change', () => savedTier.set(r.value)));
+
 // ---------- Custom MB ----------
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 function setCustomMb(value, source) {
@@ -749,34 +882,69 @@ function fmtSec(s) {
   return `${m}:${sec}`;
 }
 
-window.api.onProgress(({ phase, percent, currentSec, durationSec, speed }) => {
-  els.progressFill.style.width = `${percent.toFixed(1)}%`;
-  encBar.style.width = `${percent.toFixed(1)}%`;
-  els.phase.textContent = phase;
-  let info = durationSec ? `${fmtSec(currentSec)} / ${fmtSec(durationSec)}` : '';
-  if (speed && speed > 0 && durationSec) {
-    const remaining = Math.max(0, durationSec - currentSec);
-    const eta = remaining / speed;
-    if (Number.isFinite(eta) && eta > 0.5) info += `  ·  ETA ${fmtSec(eta)}  ·  ${speed.toFixed(2)}x`;
-  }
-  els.timeInfo.textContent = info;
-  // Mirror into the running queue item.
-  if (runningId !== null) {
-    const item = queue.find(q => q.id === runningId);
-    if (item) {
-      item.progress = percent;
-      // Lightweight DOM update — only the running item's progress fill +
-      // status text — instead of a full renderQueue() each frame.
-      const li = els.queueList.children[queue.indexOf(item)];
-      if (li) {
-        const fill = li.querySelector('.q-progress-fill');
-        if (fill) fill.style.width = `${percent}%`;
-        const status = li.querySelector('.q-status');
-        if (status) status.textContent = `encoding ${percent.toFixed(0)}%`;
-      }
+// Map jobId -> latest progress fields, used for global aggregate ETA.
+const jobProgress = new Map();
+
+window.api.onProgress(({ jobId, phase, percent, currentSec, durationSec, speed }) => {
+  // Global progress bar shows the aggregate when running queue, or single
+  // job progress when only one is active.
+  jobProgress.set(jobId, { phase, percent, currentSec, durationSec, speed });
+
+  // Find the queue item by jobId.
+  const item = queue.find(q => q.jobId === jobId);
+  if (item) {
+    item.progress = percent;
+    const idx = queue.indexOf(item);
+    const li = els.queueList.children[idx];
+    if (li) {
+      const fill = li.querySelector('.q-progress-fill');
+      if (fill) fill.style.width = `${percent}%`;
+      const status = li.querySelector('.q-status');
+      if (status) status.textContent = `encoding ${percent.toFixed(0)}%`;
     }
   }
+
+  updateGlobalProgress();
 });
+
+function updateGlobalProgress() {
+  const active = queue.filter(q => q.status === 'encoding');
+  if (active.length === 0) return;
+  if (active.length === 1) {
+    const item = active[0];
+    const data = jobProgress.get(item.jobId);
+    if (!data) return;
+    els.progressFill.style.width = `${data.percent.toFixed(1)}%`;
+    encBar.style.width = `${data.percent.toFixed(1)}%`;
+    els.phase.textContent = `${basename(item.input)} — ${data.phase}`;
+    let info = data.durationSec ? `${fmtSec(data.currentSec)} / ${fmtSec(data.durationSec)}` : '';
+    if (data.speed && data.speed > 0 && data.durationSec) {
+      const remaining = Math.max(0, data.durationSec - data.currentSec);
+      const eta = remaining / data.speed;
+      if (Number.isFinite(eta) && eta > 0.5) info += `  ·  ETA ${fmtSec(eta)}  ·  ${data.speed.toFixed(2)}x`;
+    }
+    els.timeInfo.textContent = info;
+  } else {
+    // Multiple jobs running in parallel — show aggregate.
+    const totalQueued = queue.filter(q => q.status === 'queued' || q.status === 'encoding').length;
+    const totalDone = queue.filter(q => q.status === 'done').length;
+    const grand = queue.length;
+    const avgPct = active.reduce((s, q) => s + (q.progress || 0), 0) / active.length;
+    els.progressFill.style.width = `${avgPct.toFixed(1)}%`;
+    encBar.style.width = `${avgPct.toFixed(1)}%`;
+    els.phase.textContent = `${active.length} jobs · ${totalDone}/${grand} done`;
+    // Aggregate ETA: max remaining seconds across active jobs.
+    let maxEta = 0;
+    for (const a of active) {
+      const d = jobProgress.get(a.jobId);
+      if (d && d.speed && d.durationSec) {
+        const eta = Math.max(0, d.durationSec - d.currentSec) / d.speed;
+        if (Number.isFinite(eta)) maxEta = Math.max(maxEta, eta);
+      }
+    }
+    els.timeInfo.textContent = maxEta > 0.5 ? `ETA ${fmtSec(maxEta)} (longest active)` : '';
+  }
+}
 
 function setBusy(busy) {
   els.startBtn.disabled = busy;
@@ -786,14 +954,11 @@ function setBusy(busy) {
 }
 
 async function startCompress() {
-  if (runningId !== null) return; // already running
+  if (queue.some(q => q.status === 'encoding')) return; // already running
 
   const queued = queue.filter(q => q.status === 'queued');
-  if (!queued.length) {
-    return toast('error', 'Queue is empty', 'Add at least one video.');
-  }
+  if (!queued.length) return toast('error', 'Queue is empty', 'Add at least one video.');
 
-  // Validate tier / target only once for the batch — they apply uniformly.
   const targetMb = mode === 'crf' ? null : resolveTargetMb();
   if (mode !== 'crf' && targetMb === null) return;
 
@@ -802,8 +967,6 @@ async function startCompress() {
     return toast('error', 'ffmpeg not found', ffmpegHint(env.platform));
   }
 
-  // Validate trim once (applied to every item in the queue — usually only
-  // makes sense for a single-item queue, but it works for all).
   const trimStart = parseTime(els.trimStart.value) || 0;
   const trimEnd = parseTime(els.trimEnd.value);
   if ((els.trimStart.value && Number.isNaN(trimStart)) ||
@@ -813,56 +976,84 @@ async function startCompress() {
 
   setBusy(true);
   queueCancelled = false;
+  jobProgress.clear();
 
-  let okCount = 0, failCount = 0;
-  for (const item of queued) {
-    if (queueCancelled) {
-      item.status = 'failed';
-      item.error = 'Cancelled before start';
-      continue;
-    }
-    runningId = item.id;
+  // Shared options for all queued items.
+  const audioKbps = els.audioCopy.checked
+    ? TIERS[getTier()].audioKbps    // ignored when audioCopy=true; harmless
+    : parseInt(els.audioKbpsSlider.value, 10) || 128;
+  const subtitleTrack = parseInt(els.subTrack.value, 10) || 0;
+
+  const sharedOpts = {
+    targetMb,
+    audioKbps,
+    audioCopy: els.audioCopy.checked,
+    codec: els.codecSelect.value || 'libx264',
+    presetLevel,
+    mode,
+    trimStart,
+    trimEnd: Number.isFinite(trimEnd) ? trimEnd : null,
+    removeAudio: els.muteAudio.checked,
+    crf: parseInt(els.crfSlider.value, 10),
+    burnSubtitles: els.burnSubs.checked,
+    subtitleTrack,
+    customResolution: els.customRes.value.trim() || null,
+    customFramerate: els.customFps.value.trim() || null,
+  };
+
+  // Encode one item; promise resolves when that item finishes (success or fail).
+  async function encodeOne(item) {
     item.status = 'encoding';
     item.progress = 0;
+    item.jobId = `q-${item.id}-${Date.now().toString(36)}`;
     renderQueue();
-    els.phase.textContent = `${basename(item.input)} — probing...`;
-    els.timeInfo.textContent = '';
-    els.progressFill.style.width = '0%';
 
-    const audioKbps = TIERS[getTier()].audioKbps;
-    const result = await window.api.startCompress({
+    const r = await window.api.startCompress({
+      ...sharedOpts,
       input: item.input,
       output: item.output,
-      targetMb,
-      audioKbps,
-      codec: els.codecSelect.value || 'libx264',
-      presetLevel,
-      mode,
-      trimStart,
-      trimEnd: Number.isFinite(trimEnd) ? trimEnd : null,
-      removeAudio: els.muteAudio.checked,
-      crf: parseInt(els.crfSlider.value, 10),
-      burnSubtitles: els.burnSubs.checked,
+      jobId: item.jobId,
     });
-
-    if (result.ok) {
+    if (r.ok) {
       item.status = 'done';
-      item.sizeMb = result.sizeMb;
-      item.output = result.output;
-      okCount++;
+      item.sizeMb = r.sizeMb;
+      item.output = r.output;
     } else {
       item.status = 'failed';
-      item.error = result.error || 'failed';
-      failCount++;
-      if (result.error === 'Cancelled') queueCancelled = true; // user cancelled — stop the queue
+      item.error = r.error || 'failed';
+      if (r.error === 'Cancelled') queueCancelled = true;
     }
-    runningId = null;
+    jobProgress.delete(item.jobId);
     renderQueue();
+  }
+
+  // Concurrency-limited pool: launch up to N at a time, replenish as they
+  // finish. Promise.race tells us when the next slot frees up.
+  const N = Math.max(1, concurrency);
+  const inFlight = new Set();
+  const remaining = queued.slice();
+
+  const launch = () => {
+    while (inFlight.size < N && remaining.length > 0 && !queueCancelled) {
+      const item = remaining.shift();
+      const p = encodeOne(item).finally(() => inFlight.delete(p));
+      inFlight.add(p);
+    }
+  };
+
+  launch();
+  while (inFlight.size > 0) {
+    await Promise.race(inFlight);
+    launch();
   }
 
   setBusy(false);
   els.phase.textContent = 'Ready';
+  els.timeInfo.textContent = '';
+  els.progressFill.style.width = '0%';
 
+  const okCount = queue.filter(q => q.status === 'done').length;
+  const failCount = queue.filter(q => q.status === 'failed').length;
   if (queue.length === 1 && okCount === 1) {
     const only = queue[0];
     toast('success', 'Compressed!',
@@ -921,6 +1112,40 @@ function ffmpegHint(platform) {
   return 'Install ffmpeg from ffmpeg.org, or place it at C:\\ffmpeg\\bin.';
 }
 
+// ---------- Restore persisted settings on startup ----------
+function restorePersistedSettings() {
+  // Mode segment.
+  const modeBtn = document.querySelector(`.seg-btn[data-mode="${savedMode.get()}"]`);
+  if (modeBtn && !modeBtn.disabled) modeBtn.click();
+  // Preset segment.
+  const presetBtn = document.querySelector(`.seg-btn[data-preset="${savedPreset.get()}"]`);
+  if (presetBtn) presetBtn.click();
+  // Tier radio.
+  const tierRadio = document.querySelector(`input[name="tier"][value="${savedTier.get()}"]`);
+  if (tierRadio) { tierRadio.checked = true; syncCustomRow(); }
+  // Checkboxes.
+  els.muteAudio.checked = savedMute.get();
+  els.burnSubs.checked  = savedBurnSubs.get();
+  els.audioCopy.checked = savedAudioCopy.get();
+  // CRF slider + label.
+  els.crfSlider.value = String(savedCrf.get());
+  els.crfValue.textContent = els.crfSlider.value;
+  els.crfQualityLabel.textContent = `${crfQualityLabel(savedCrf.get())} · file size will be whatever it is`;
+  // Audio bitrate slider.
+  els.audioKbpsSlider.value = String(savedAudioKbps.get());
+  els.audioKbpsValue.textContent = els.audioKbpsSlider.value;
+  els.audioKbpsSlider.style.setProperty('--filled',
+    `${(savedAudioKbps.get() - 32) / (256 - 32) * 100}%`);
+  // Concurrency slider.
+  els.concurrencySlider.value = String(concurrency);
+  els.concurrencyValue.textContent = String(concurrency);
+  els.concurrencySlider.style.setProperty('--filled', `${(concurrency - 1) / 3 * 100}%`);
+  // Custom res / fps.
+  els.customRes.value = savedCustomRes.get();
+  els.customFps.value = savedCustomFps.get();
+  refreshAudioHint();
+}
+
 window.api.onEncoders(populateCodecs);
 (async () => {
   const env = await window.api.checkEnv();
@@ -935,6 +1160,7 @@ window.api.onEncoders(populateCodecs);
   } else {
     populateCodecs(['libx264']);
   }
+  restorePersistedSettings();
 
   const upd = await window.api.checkUpdate();
   if (upd && upd.latest) {

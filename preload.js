@@ -7,7 +7,7 @@ contextBridge.exposeInMainWorld('api', {
   saveLog: () => ipcRenderer.invoke('dialog:saveLog'),
   probeMedia: (path) => ipcRenderer.invoke('media:probe', path),
   startCompress: (opts) => ipcRenderer.invoke('compress:start', opts),
-  cancelCompress: () => ipcRenderer.invoke('compress:cancel'),
+  cancelCompress: (jobId) => ipcRenderer.invoke('compress:cancel', jobId),
   revealInFolder: (p) => ipcRenderer.invoke('shell:reveal', p),
   openExternal: (url) => ipcRenderer.invoke('shell:open', url),
   resolveAvailable: (p) => ipcRenderer.invoke('fs:resolveAvailable', p),
