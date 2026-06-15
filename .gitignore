@@ -8,3 +8,10 @@ build/icon_*.png
 *.log
 .DS_Store
 Thumbs.db
+
+# Local Claude Code settings (machine-specific permissions/paths)
+.claude/settings.local.json
+
+# Copyrighted character art for the Akeno / Astolfo themes — kept local, not
+# redistributed. Drop your own akeno.png / astolfo.png into renderer/assets/.
+renderer/assets/*.png

@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { spawn, spawnSync } = require('child_process');
+const { pathToFileURL } = require('url');
 
 // Lets the renderer's <video> element fetch local files without opening up
 // file:// + webSecurity:false. Registered before app:ready.
@@ -415,12 +416,16 @@ async function compress(opts, send) {
     audioKbps, removeAudio = false, audioCopy = false,
     codec = 'libx264',
     presetLevel = 'balanced',
-    mode = 'twopass',                       // 'twopass' | 'fast' | 'crf'
+    mode = 'twopass',                       // 'twopass' | 'fast' | 'crf' | 'justin'
     trimStart = 0, trimEnd = null,
     crf = 60,
     burnSubtitles = false, subtitleTrack = 0, subtitleStyle = null,
     customResolution = null,                // "1280x720" or "1280:720" or null
     customFramerate = null,                 // number or null
+    // Chunked parallel encoding (ported from NotEnoughAV1Encodes): split the
+    // source into segments, encode them concurrently across N workers, then
+    // concat + remux audio. Big speedup for slow CPU encodes on many cores.
+    chunked = false, chunkLength = 10, chunkWorkers = 2,
     jobId,
   } = opts;
   jobId = makeJobId(jobId);
@@ -438,12 +443,16 @@ async function compress(opts, send) {
   const effectiveDuration = end - start;
 
   // CRF mode skips the bitrate budget entirely; quality is fixed and the
-  // resulting file size is whatever it is.
+  // resulting file size is whatever it is. Justin mode (a faithful
+  // discord_vid.bat clone — fixed libx264 CRF 23) is size-free for the same
+  // reason: the recipe decides the size, not a target.
   const isCrfMode = mode === 'crf';
-  const totalKbps = isCrfMode ? 0 : (targetMb * 8 * 1024) / effectiveDuration;
+  const isJustin  = mode === 'justin';
+  const sizeFree  = isCrfMode || isJustin;
+  const totalKbps = sizeFree ? 0 : (targetMb * 8 * 1024) / effectiveDuration;
   const audioK = removeAudio ? 0 : audioKbps;
-  const videoKbps = isCrfMode ? 0 : Math.floor(totalKbps - audioK);
-  if (!isCrfMode && videoKbps < 100) {
+  const videoKbps = sizeFree ? 0 : Math.floor(totalKbps - audioK);
+  if (!sizeFree && videoKbps < 100) {
     // Compute the smallest target that would give ~150 kbps video + audio,
     // then suggest the cheapest Discord tier that covers it. Way more
     // actionable than just "trim or pick higher tier".
@@ -469,7 +478,7 @@ async function compress(opts, send) {
     const m = String(customResolution).match(/^(\d+)\s*[x:×]\s*(\d+)$/);
     if (m) scaleFilter = `scale=${m[1]}:${m[2]}`;
   } else {
-    const scaleH = isCrfMode ? null : pickScale(info.height, targetMb);
+    const scaleH = sizeFree ? null : pickScale(info.height, targetMb);
     if (scaleH) scaleFilter = `scale=-2:${scaleH}`;
   }
   let vfChain = scaleFilter;
@@ -493,13 +502,15 @@ async function compress(opts, send) {
   const vf = vfChain || null;
 
   // Custom framerate: applied as -r at output position so it overrides
-  // the source rate without resampling on input.
-  const fpsArgs = customFramerate ? ['-r', String(customFramerate)] : [];
+  // the source rate without resampling on input. Justin mode never sets -r
+  // (the .bat doesn't), so the source framerate is preserved verbatim.
+  const fpsArgs = (customFramerate && !isJustin) ? ['-r', String(customFramerate)] : [];
 
   // Override the output extension if the user picked VP9 (which lives in
   // WebM rather than MP4). Doing this in main rather than the renderer
   // means it's enforced even if the renderer's sync is bypassed.
-  const wantedExt = '.' + containerFor(codec);
+  // Justin mode is always MP4 (the .bat always writes <name>_discord.mp4).
+  const wantedExt = '.' + (isJustin ? 'mp4' : containerFor(codec));
   const curExt = path.extname(output).toLowerCase();
   if (curExt !== wantedExt) {
     const stem = curExt ? output.slice(0, -curExt.length) : output;
@@ -518,26 +529,35 @@ async function compress(opts, send) {
   const baseInput = [
     '-y', '-hide_banner', '-loglevel', 'error',
     '-progress', 'pipe:1', '-nostats',
-    ...vaapiInputArgs(codec),
+    // Justin mode is pure software libx264 — never attach a VAAPI device.
+    ...(isJustin ? [] : vaapiInputArgs(codec)),
     ...inputTrim,
     '-i', input,
     ...outputTrim,
   ];
 
-  const videoArgs = isCrfMode
-    ? videoCodecArgsCRF(codec, presetLevel, crf)
-    : videoCodecArgs(codec, presetLevel, videoKbps);
-  if (vf) videoArgs.push('-vf', vf);
+  // Justin mode emits the .bat's exact video recipe verbatim:
+  //   -vcodec libx264 -preset fast -crf 23
+  // No scaling filter and no -pix_fmt override — the .bat sets neither.
+  const videoArgs = isJustin
+    ? ['-vcodec', 'libx264', '-preset', 'fast', '-crf', '23']
+    : isCrfMode
+      ? videoCodecArgsCRF(codec, presetLevel, crf)
+      : videoCodecArgs(codec, presetLevel, videoKbps);
+  if (vf && !isJustin) videoArgs.push('-vf', vf);
   // VAAPI encoders consume hardware frames after hwupload; setting -pix_fmt
   // would clash with that. Other codecs all accept yuv420p as a safe 8-bit
   // baseline that maximises playback compatibility.
-  if (!isVaapiCodec(codec)) videoArgs.push('-pix_fmt', 'yuv420p');
+  if (!isVaapiCodec(codec) && !isJustin) videoArgs.push('-pix_fmt', 'yuv420p');
 
   // ---------- audio handling ----------
-  const cont = containerFor(codec);
+  const cont = isJustin ? 'mp4' : containerFor(codec);
   const fallbackACodec = cont === 'webm' ? 'libopus' : 'aac';
   let audioTail;
-  if (removeAudio) {
+  if (isJustin) {
+    // The .bat always re-encodes audio to AAC @ 192k — no strip, no copy.
+    audioTail = ['-acodec', 'aac', '-b:a', '192k'];
+  } else if (removeAudio) {
     audioTail = ['-an'];
   } else if (audioCopy && audioCompatibleWithContainer(info.audioCodec, cont)) {
     // Pass-through: no re-encode, original audio stream is remuxed.
@@ -546,6 +566,35 @@ async function compress(opts, send) {
     audioTail = ['-c:a', fallbackACodec, '-b:a', `${audioKbps}k`];
   }
   const muxFlags = cont === 'mp4' ? ['-movflags', '+faststart'] : [];
+
+  // ---------- chunked parallel encoding (NotEnoughAV1Encodes method) ----------
+  // Split the source into segments, encode them across N workers, concat, then
+  // remux audio. Reuses the exact videoArgs resolved above (so each chunk
+  // encodes identically to the normal single-pass path). Restricted to CPU
+  // codecs (HW encoders share one GPU and gain nothing), never with burned-in
+  // subtitles (per-chunk timestamps would desync), and only when the clip is
+  // long enough to yield at least two chunks — otherwise we fall through to the
+  // normal path below.
+  const chunkLen = Math.max(2, Math.floor(Number(chunkLength) || 10));
+  // Justin mode always encodes with CPU libx264, so treat it as a CPU codec
+  // here regardless of the (ignored) codec dropdown. Skip chunking when
+  // trimming (keyframe-snapped stream-copy splits can't match the audio trim
+  // exactly → A/V desync) or with burned-in subtitles; both fall through to the
+  // precise single-process path below.
+  const trimActive = start > 0 || end < info.duration;
+  const useChunked = chunked && (isJustin || isCpuCodec(codec)) &&
+                     !burnSubtitles && !trimActive &&
+                     Math.ceil(effectiveDuration / chunkLen) >= 2;
+  if (useChunked) {
+    const workers = Math.max(1, Math.min(32, Math.floor(Number(chunkWorkers) || 2)));
+    const sizeMb = await encodeChunked({
+      input, output, info, start, end, effectiveDuration,
+      videoArgs, fpsArgs, audioTail, muxFlags, removeAudio,
+      chunkLen, workers, jobId, sendProgress,
+    });
+    jobs.delete(jobId);
+    return { sizeMb, output, jobId };
+  }
 
   if (wantTwoPass) {
     const logPrefix = path.join(path.dirname(output),
@@ -585,16 +634,18 @@ async function compress(opts, send) {
       }
     }
   } else {
-    // Single-pass (Fast or CRF).
+    // Single-pass (Fast, CRF, or Justin).
     const args = [
       ...baseInput, ...videoArgs, ...fpsArgs,
       ...audioTail,
       ...muxFlags,
       output,
     ];
-    const phase = isCrfMode
-      ? 'Encoding (CRF)'
-      : (isCpuCodec(codec) ? 'Encoding (1 pass)' : 'Encoding (HW accel)');
+    const phase = isJustin
+      ? 'Encoding (Justin · CRF 23)'
+      : isCrfMode
+        ? 'Encoding (CRF)'
+        : (isCpuCodec(codec) ? 'Encoding (1 pass)' : 'Encoding (HW accel)');
     sendProgress({ phase, percent: 0, currentSec: 0, durationSec: effectiveDuration });
     await runFfmpeg(args, effectiveDuration, jobId, (frac, sec, speed) => {
       sendProgress({ phase, percent: frac * 100, currentSec: sec, durationSec: effectiveDuration, speed });
@@ -604,6 +655,156 @@ async function compress(opts, send) {
   const sizeMb = fs.statSync(output).size / (1024 * 1024);
   jobs.delete(jobId);
   return { sizeMb, output, jobId };
+}
+
+// ---------- chunked parallel encoding ----------
+// Faithful port of NotEnoughAV1Encodes' core pipeline:
+//   1. Split the (trimmed) source into keyframe-bounded segments with ffmpeg's
+//      segment muxer (stream copy — fast and lossless, no giant intermediates).
+//   2. Encode every segment independently, N at a time, with the same video
+//      args the normal path uses (so output is identical, just parallelised).
+//   3. Concat the encoded segments with the concat demuxer (-c copy).
+//   4. Remux the source audio back in (trimmed to match) and write the final
+//      container (+faststart for mp4).
+// Every ffmpeg call goes through runFfmpeg so cancellation, logging, and
+// progress all behave like the single-process path.
+async function encodeChunked(p) {
+  const {
+    input, output, info, start, end, effectiveDuration,
+    videoArgs, fpsArgs, audioTail, muxFlags, removeAudio,
+    chunkLen, workers, jobId, sendProgress,
+  } = p;
+  const job = getJob(jobId);
+  const FF = ['-y', '-hide_banner', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats'];
+
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'dvc-chunk-'));
+  const chunksDir = path.join(work, 'src');
+  const outDir = path.join(work, 'enc');
+  fs.mkdirSync(chunksDir);
+  fs.mkdirSync(outDir);
+
+  // Build a concat-list line with the path made safe for ffmpeg's concat
+  // demuxer: forward slashes, single quotes escaped.
+  const concatLine = (f) => `file '${f.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`;
+
+  try {
+    const inputTrim  = start > 0 ? ['-ss', String(start)] : [];
+    const outputTrim = end < info.duration ? ['-to', String(effectiveDuration)] : [];
+
+    // ---- 1. split (stream-copy segments at keyframe boundaries) ----
+    sendProgress({ phase: 'Splitting', percent: 0, currentSec: 0, durationSec: effectiveDuration });
+    const splitArgs = [
+      ...FF, ...inputTrim, '-i', input, ...outputTrim,
+      '-map', '0:v:0', '-c', 'copy', '-an', '-sn', '-map_metadata', '-1',
+      '-reset_timestamps', '1', '-f', 'segment', '-segment_time', String(chunkLen),
+      path.join(chunksDir, 'split%06d.mkv'),
+    ];
+    await runFfmpeg(splitArgs, effectiveDuration, jobId, (frac, sec, speed) => {
+      sendProgress({ phase: 'Splitting', percent: frac * 8, currentSec: sec, durationSec: effectiveDuration, speed });
+    });
+    if (job.cancelled) throw new Error('Cancelled');
+
+    const chunks = fs.readdirSync(chunksDir).filter(f => /\.mkv$/i.test(f)).sort();
+    if (!chunks.length) throw new Error('Chunking produced no segments.');
+    // Segment durations: all chunkLen except the last (keyframe-snapping makes
+    // these approximate, which only affects progress weighting, not output).
+    const chunkDur = chunks.map((_, i) =>
+      Math.max(0.1, Math.min(chunkLen, effectiveDuration - i * chunkLen)));
+    const totalDur = chunkDur.reduce((a, b) => a + b, 0) || effectiveDuration;
+
+    // ---- 2. encode every segment, N workers at a time ----
+    const frac = new Array(chunks.length).fill(0);
+    const spd = new Array(chunks.length).fill(0);
+    const encOut = new Array(chunks.length);
+    let done = 0;
+    const report = () => {
+      const weighted = frac.reduce((s, f, i) => s + f * chunkDur[i], 0) / totalDur;
+      const combinedSpeed = spd.reduce((a, b) => a + b, 0);
+      sendProgress({
+        phase: `Encoding ${done}/${chunks.length} chunks · ${workers} workers`,
+        percent: 8 + Math.max(0, Math.min(1, weighted)) * 80,
+        currentSec: weighted * effectiveDuration,
+        durationSec: effectiveDuration,
+        speed: combinedSpeed || null,
+      });
+    };
+    report();
+
+    const encodeOne = async (i) => {
+      const inPath = path.join(chunksDir, chunks[i]);
+      const outPath = path.join(outDir, `enc${String(i).padStart(6, '0')}.mkv`);
+      encOut[i] = outPath;
+      const args = [
+        ...FF, '-i', inPath,
+        ...videoArgs, ...fpsArgs, '-an', '-sn', '-map_metadata', '-1',
+        '-f', 'matroska', outPath,
+      ];
+      await runFfmpeg(args, chunkDur[i], jobId, (f, sec, s) => {
+        frac[i] = f; spd[i] = s || 0; report();
+      });
+      frac[i] = 1; spd[i] = 0; done++; report();
+    };
+
+    let next = 0;
+    let firstError = null;
+    const W = Math.max(1, Math.min(workers, chunks.length));
+    const runner = async () => {
+      while (!job.cancelled && !firstError) {
+        const i = next++;
+        if (i >= chunks.length) break;
+        try {
+          await encodeOne(i);
+        } catch (e) {
+          // Record the first failure and kill siblings so we fail fast without
+          // leaving orphaned ffmpeg processes or unhandled rejections.
+          if (!firstError) {
+            firstError = e;
+            for (const pr of job.procs) { try { pr.kill(); } catch (_) {} }
+          }
+          return;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: W }, () => runner()));
+    if (job.cancelled) throw new Error('Cancelled');
+    if (firstError) throw firstError;
+
+    // ---- 3. concat the encoded segments ----
+    sendProgress({ phase: 'Merging chunks', percent: 88, currentSec: 0, durationSec: effectiveDuration });
+    const listPath = path.join(work, 'concat.txt');
+    fs.writeFileSync(listPath, encOut.map(concatLine).join('\n') + '\n', 'utf8');
+    const merged = path.join(work, 'merged.mkv');
+    await runFfmpeg(
+      [...FF, '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', merged],
+      effectiveDuration, jobId,
+      (f, sec, speed) => sendProgress({ phase: 'Merging chunks', percent: 88 + f * 4, currentSec: sec, durationSec: effectiveDuration, speed }));
+    if (job.cancelled) throw new Error('Cancelled');
+
+    // ---- 4. remux audio (from the trimmed source) + finalise container ----
+    sendProgress({ phase: 'Muxing audio', percent: 92, currentSec: 0, durationSec: effectiveDuration });
+    let muxArgs;
+    if (removeAudio) {
+      muxArgs = [...FF, '-i', merged, '-map', '0:v:0', '-c', 'copy', ...muxFlags, output];
+    } else {
+      const aTrim = [
+        ...(start > 0 ? ['-ss', String(start)] : []),
+        ...(end < info.duration ? ['-t', String(effectiveDuration)] : []),
+      ];
+      muxArgs = [
+        ...FF, '-i', merged, ...aTrim, '-i', input,
+        '-map', '0:v:0', '-map', '1:a:0?', '-c:v', 'copy', ...audioTail,
+        '-shortest', ...muxFlags, output,
+      ];
+    }
+    await runFfmpeg(muxArgs, effectiveDuration, jobId,
+      (f, sec, speed) => sendProgress({ phase: 'Muxing audio', percent: 92 + f * 8, currentSec: sec, durationSec: effectiveDuration, speed }));
+
+    return fs.statSync(output).size / (1024 * 1024);
+  } finally {
+    // Async cleanup with retries (Windows may briefly hold chunk file handles
+    // after a killed ffmpeg) so it neither blocks nor throws.
+    try { await fs.promises.rm(work, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }); } catch (_) {}
+  }
 }
 
 // ---------- update checker ----------
@@ -659,6 +860,7 @@ function registerIpc(win) {
     appVersion: APP_VERSION,
     isDarkOS: nativeTheme.shouldUseDarkColors,
     platform: process.platform,
+    cpuCores: os.cpus().length,
   }));
 
   ipcMain.handle('media:probe', async (_e, p) => {
@@ -677,6 +879,29 @@ function registerIpc(win) {
       ],
     });
     return r.canceled ? null : r.filePaths[0];
+  });
+
+  // Folder picker — mirrors discord_vid.bat's "input folder" concept: pick a
+  // directory and enqueue every .mp4/.mkv/.avi/.mov inside it (the exact
+  // extension set the .bat loops over).
+  ipcMain.handle('dialog:openFolder', async () => {
+    const r = await dialog.showOpenDialog(win, {
+      title: 'Select a folder of videos',
+      properties: ['openDirectory'],
+    });
+    if (r.canceled || !r.filePaths[0]) return null;
+    const dir = r.filePaths[0];
+    const exts = new Set(['.mp4', '.mkv', '.avi', '.mov']);
+    try {
+      const files = fs.readdirSync(dir)
+        .filter(f => exts.has(path.extname(f).toLowerCase()))
+        .map(f => path.join(dir, f))
+        .filter(p => { try { return fs.statSync(p).isFile(); } catch { return false; } })
+        .sort((a, b) => a.localeCompare(b));
+      return { dir, files };
+    } catch (e) {
+      return { error: e.message };
+    }
   });
 
   ipcMain.handle('dialog:saveOutput', async (_e, suggested) => {
@@ -711,12 +936,34 @@ function registerIpc(win) {
     // Pre-allocate the jobId so the renderer can match progress events
     // even before compress() returns.
     const jobId = makeJobId(opts.jobId);
+    // Justin mode (faithful to discord_vid.bat): copy the source to a temp
+    // file first and encode from there, exactly like the .bat's "copy to
+    // %TEMP% to avoid locked file issue" step. The copy is removed in the
+    // finally below no matter how the job ends (success, error, or cancel).
+    let justinTemp = null;
+    let runOpts = opts;
+    if (opts.mode === 'justin' && opts.input) {
+      try {
+        justinTemp = path.join(os.tmpdir(),
+          `dvc-justin-${process.pid}-${Date.now()}-${path.basename(opts.input)}`);
+        // Async copy so a large source doesn't block the main thread / freeze
+        // the UI while it's being duplicated.
+        await fs.promises.copyFile(opts.input, justinTemp);
+        runOpts = { ...opts, input: justinTemp };
+      } catch (e) {
+        appendLog(`[justin] temp copy failed (${e.message}); encoding original\n`);
+        justinTemp = null;
+        runOpts = opts;
+      }
+    }
     try {
-      const r = await compress({ ...opts, jobId }, send);
+      const r = await compress({ ...runOpts, jobId }, send);
       return { ok: true, sizeMb: r.sizeMb, output: r.output, jobId };
     } catch (err) {
       jobs.delete(jobId);
       return { ok: false, error: err.message || String(err), jobId };
+    } finally {
+      if (justinTemp) { try { fs.unlinkSync(justinTemp); } catch (_) {} }
     }
   });
 
@@ -745,9 +992,11 @@ function registerIpc(win) {
       if (process.platform === 'win32') {
         // PowerShell's Set-Clipboard -Path puts a CF_HDROP file list on the
         // clipboard, which Discord (and Explorer) accept on paste.
+        // Single-quote the path so PowerShell doesn't expand `$`/backtick in
+        // filenames (e.g. a folder literally named "$home"); '' escapes a quote.
         const r = spawnSync('powershell.exe',
           ['-NoProfile', '-NonInteractive', '-Command',
-           `Set-Clipboard -Path "${p.replace(/"/g, '""')}"`],
+           `Set-Clipboard -Path '${p.replace(/'/g, "''")}'`],
           { windowsHide: true });
         if (r.status === 0) return { ok: true, mode: 'file' };
       } else if (process.platform === 'linux') {
@@ -851,18 +1100,28 @@ app.whenReady().then(() => {
   // dvc-media://<absolute-path> serves local files to the renderer. We
   // can't use file:// directly without disabling webSecurity; this gives
   // the <video> element on the Encoding tab a clean URL it can load.
-  protocol.handle('dvc-media', (req) => {
-    const url = new URL(req.url);
-    let pathname = decodeURIComponent(url.pathname);
-    if (process.platform === 'win32' && /^\/[a-zA-Z]:/.test(pathname)) {
-      pathname = pathname.slice(1);
+  protocol.handle('dvc-media', async (req) => {
+    try {
+      // Decode the request back to a real filesystem path, then build a correct
+      // file:// URL with pathToFileURL. The previous `'file://' + path` concat
+      // broke for filenames containing '#' (parsed as a URL fragment) or '?'
+      // (query), and was fragile with spaces.
+      let pathname = decodeURIComponent(new URL(req.url).pathname);
+      if (process.platform === 'win32' && /^\/[a-zA-Z]:/.test(pathname)) {
+        pathname = pathname.slice(1);
+      }
+      return await net.fetch(pathToFileURL(pathname).toString());
+    } catch (e) {
+      // Missing / unreadable file → fail gracefully instead of letting
+      // net.fetch's rejection surface as an uncaught ERR_FILE_NOT_FOUND.
+      appendLog(`dvc-media fetch failed: ${e.message}\n`);
+      return new Response('Not found', { status: 404 });
     }
-    return net.fetch('file://' + pathname.replace(/\\/g, '/'));
   });
   createWindow();
 });
 app.on('window-all-closed', () => {
-  killActive();
+  cancelAllJobs();
   if (process.platform !== 'darwin') app.quit();
 });
 app.on('activate', () => {

@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 contextBridge.exposeInMainWorld('api', {
   checkEnv: () => ipcRenderer.invoke('env:check'),
   pickInput: () => ipcRenderer.invoke('dialog:openInput'),
+  pickInputFolder: () => ipcRenderer.invoke('dialog:openFolder'),
   pickOutput: (suggested) => ipcRenderer.invoke('dialog:saveOutput', suggested),
   saveLog: () => ipcRenderer.invoke('dialog:saveLog'),
   probeMedia: (path) => ipcRenderer.invoke('media:probe', path),
@@ -24,8 +25,8 @@ contextBridge.exposeInMainWorld('api', {
   // protocol handler in main.js maps this to the underlying file:// URL.
   mediaUrl: (p) => {
     if (!p) return '';
-    // encodeURI handles spaces and unicode; we manually re-encode '#' and
-    // '?' since they have URL meaning even in path components.
+    // encodeURI handles spaces, '%', and unicode; we manually re-encode '#'
+    // and '?' since encodeURI leaves them raw but they have URL meaning.
     const encoded = encodeURI(p.replace(/\\/g, '/'))
       .replace(/#/g, '%23').replace(/\?/g, '%3F');
     return 'dvc-media:///' + encoded.replace(/^\//, '');

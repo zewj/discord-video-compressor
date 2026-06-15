@@ -40,10 +40,12 @@ function containerFor(c) { return c === 'libvpx-vp9' ? 'webm' : 'mp4'; }
 
 const els = {
   pickInput: document.getElementById('pick-input'),
+  pickFolder: document.getElementById('pick-folder'),
   clearQueue: document.getElementById('clear-queue'),
   queueList: document.getElementById('queue-list'),
   queueCount: document.getElementById('queue-count'),
   emptyHint: document.getElementById('empty-hint'),
+  justinNote: document.getElementById('justin-note'),
 
   customMb: document.getElementById('custom-mb'),
   customMbSlider: document.getElementById('custom-mb-slider'),
@@ -101,6 +103,11 @@ const els = {
   customFps: document.getElementById('custom-fps'),
   concurrencySlider: document.getElementById('concurrency-slider'),
   concurrencyValue: document.getElementById('concurrency-value'),
+  chunkedEnable: document.getElementById('chunked-enable'),
+  chunkRow: document.getElementById('chunk-row'),
+  chunkWorkers: document.getElementById('chunk-workers'),
+  chunkLength: document.getElementById('chunk-length'),
+  chunkHint: document.getElementById('chunk-hint'),
   crfQualityLabel: document.getElementById('crf-quality-label'),
   profileSelect: document.getElementById('profile-select'),
   profileSave: document.getElementById('profile-save'),
@@ -144,6 +151,20 @@ const savedAudioCopy   = persistedBool('dvc.audioCopy', false);
 const savedConcurrency = persistedInt('dvc.concurrency', 1);
 const savedCustomRes   = persistedValue('dvc.customRes', '');
 const savedCustomFps   = persistedValue('dvc.customFps', '');
+const savedChunked      = persistedBool('dvc.chunked', false);
+const savedChunkWorkers = persistedInt('dvc.chunkWorkers', 2);
+const savedChunkLength  = persistedInt('dvc.chunkLength', 10);
+
+// First launch of the discord_vid.bat-recipe build: default the encoding
+// mode to "Justin" so the app compresses with the .bat's exact recipe out of
+// the box. Done once (guarded by a flag) so we never override a deliberate
+// later choice the user makes.
+try {
+  if (!localStorage.getItem('dvc.justinDefaulted')) {
+    savedMode.set('justin');
+    localStorage.setItem('dvc.justinDefaulted', '1');
+  }
+} catch (_) {}
 
 // ---------- Tabs ----------
 const TAB_KEY = 'dvc.tab';
@@ -188,9 +209,14 @@ const initialTab = (() => {
 })();
 requestAnimationFrame(() => activateTab(initialTab));
 
-// ---------- Theme handling ----------
+// ---------- Theme handling (named dropdown picker) ----------
 const THEME_KEY = 'dvc.theme';
-const themeButtons = document.querySelectorAll('.theme-btn');
+const themeMenu = document.getElementById('theme-menu');
+const themeTrigger = document.getElementById('theme-trigger');
+const themeDropdown = document.getElementById('theme-dropdown');
+const themeTriggerDot = document.getElementById('theme-trigger-dot');
+const themeTriggerLabel = document.getElementById('theme-trigger-label');
+const themeOptions = Array.from(document.querySelectorAll('.theme-option'));
 let osIsDark = true;
 
 function effectiveTheme(name) {
@@ -199,11 +225,42 @@ function effectiveTheme(name) {
 function applyTheme(name) {
   document.documentElement.dataset.theme = effectiveTheme(name);
   document.documentElement.dataset.themeChoice = name;
-  themeButtons.forEach(b => b.classList.toggle('active', b.dataset.theme === name));
+  const opt = themeOptions.find(o => o.dataset.theme === name);
+  if (themeTriggerDot) themeTriggerDot.dataset.theme = name;
+  if (themeTriggerLabel) themeTriggerLabel.textContent = opt ? opt.textContent.trim() : name;
+  themeOptions.forEach(o => o.classList.toggle('active', o.dataset.theme === name));
   try { localStorage.setItem(THEME_KEY, name); } catch (_) {}
 }
-themeButtons.forEach(b => b.addEventListener('click', () => applyTheme(b.dataset.theme)));
+function openThemeMenu(open) {
+  if (!themeMenu) return;
+  themeMenu.classList.toggle('open', open);
+  themeDropdown.hidden = !open;
+  themeTrigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+if (themeTrigger) {
+  themeTrigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openThemeMenu(themeDropdown.hidden);
+  });
+  themeOptions.forEach(o => o.addEventListener('click', () => {
+    applyTheme(o.dataset.theme);
+    openThemeMenu(false);
+  }));
+  // Close on outside click or Escape.
+  document.addEventListener('click', (e) => {
+    if (!themeMenu.contains(e.target)) openThemeMenu(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') openThemeMenu(false);
+  });
+}
 applyTheme(localStorage.getItem(THEME_KEY) || 'midnight');
+
+// Hide any waifu art that fails to load (e.g. the PNG hasn't been added yet)
+// so there's no broken-image artifact behind the UI.
+document.querySelectorAll('.waifu-img').forEach(img => {
+  img.addEventListener('error', () => { img.style.display = 'none'; });
+});
 
 window.api.onSystemTheme(({ isDark }) => {
   osIsDark = isDark;
@@ -270,8 +327,14 @@ function stem(p) {
   return dot >= 0 ? p.slice(0, dot) : p;
 }
 
+// Justin mode always writes MP4 (matching discord_vid.bat); otherwise the
+// container follows the selected codec.
+function effectiveContainer(codec) {
+  if (mode === 'justin') return 'mp4';
+  return containerFor(codec || els.codecSelect.value || 'libx264');
+}
 async function defaultOutputFor(inputPath, codec) {
-  const ext = '.' + containerFor(codec || els.codecSelect.value || 'libx264');
+  const ext = '.' + effectiveContainer(codec);
   const desired = stem(inputPath) + '_discord' + ext;
   // resolveAvailable bumps "(1)", "(2)" etc. if there's a collision.
   return await window.api.resolveAvailable(desired);
@@ -411,6 +474,20 @@ els.pickInput.addEventListener('click', async () => {
   const p = await window.api.pickInput();
   if (p) await enqueue([p]);
 });
+// Folder add — discord_vid.bat's "input folder" flow: queue every video in a
+// chosen directory.
+els.pickFolder.addEventListener('click', async () => {
+  const r = await window.api.pickInputFolder();
+  if (!r) return;
+  if (r.error) return toast('error', 'Folder error', r.error);
+  if (!r.files || !r.files.length) {
+    return toast('info', 'No videos found', 'That folder has no .mp4/.mkv/.avi/.mov files.');
+  }
+  await enqueue(r.files);
+  toast('success',
+    `Queued ${r.files.length} video${r.files.length > 1 ? 's' : ''}`,
+    basename(r.dir));
+});
 els.clearQueue.addEventListener('click', clearQueue);
 
 // Drag & drop: works for one or many files.
@@ -467,6 +544,7 @@ els.codecSelect.addEventListener('change', () => {
   updateCodecHint();
   syncModeForCodec();
   syncOutputsForAll();
+  syncChunkedUI();
 });
 
 function updateCodecHint() {
@@ -506,7 +584,7 @@ function syncModeForCodec() {
 }
 
 async function syncOutputsForAll() {
-  const ext = '.' + containerFor(els.codecSelect.value);
+  const ext = '.' + effectiveContainer(els.codecSelect.value);
   for (const item of queue) {
     if (item.status !== 'queued') continue;
     const m = item.output.match(/^(.*)(\.[^.\\/]+)$/);
@@ -525,8 +603,30 @@ document.querySelectorAll('.seg-btn[data-mode]').forEach(b => {
     document.querySelectorAll('.seg-btn[data-mode]').forEach(x =>
       x.classList.toggle('active', x === b));
     els.crfRow.hidden = mode !== 'crf';
+    updateModeHint();
+    syncJustinUI();
+    syncChunkedUI();       // Justin counts as a CPU codec for chunking
+    syncOutputsForAll();   // Justin forces .mp4; other modes follow the codec
   });
 });
+
+// Mode hint text + Justin-mode UI sync (the note on the Compress tab and the
+// dimmed, ignored size tiers).
+function updateModeHint() {
+  const hints = {
+    twopass: 'Two-pass = most accurate target size · CPU codecs only.',
+    fast:    'Fast = single-pass, quick · targets your selected size.',
+    crf:     'Quality = constant-quality CRF · final size is whatever it is.',
+    justin:  'Justin = the discord_vid.bat recipe: libx264 · preset fast · CRF 23 · AAC 192k · +faststart. Copies the source to a temp file first; ignores the codec / size / quality controls.',
+  };
+  if (els.modeHint) els.modeHint.textContent = hints[mode] || '';
+}
+function syncJustinUI() {
+  const on = mode === 'justin';
+  if (els.justinNote) els.justinNote.hidden = !on;
+  const tiers = document.querySelector('.tiers');
+  if (tiers) tiers.classList.toggle('is-disabled', on);
+}
 document.querySelectorAll('.seg-btn[data-preset]').forEach(b => {
   b.addEventListener('click', () => {
     presetLevel = b.dataset.preset;
@@ -587,6 +687,43 @@ els.concurrencySlider.addEventListener('input', () => {
   savedConcurrency.set(concurrency);
   const pct = (concurrency - 1) / 3 * 100;
   els.concurrencySlider.style.setProperty('--filled', `${pct}%`);
+});
+
+// ---------- Chunked parallel encoding (NotEnoughAV1Encodes method) ----------
+let cpuCores = 4;
+// Chunking only helps CPU encodes and breaks subtitle burn-in, so disable the
+// toggle (and explain why) when those don't apply.
+function syncChunkedUI() {
+  // Justin mode always uses CPU libx264, so it's chunkable even if the ignored
+  // codec dropdown shows a hardware encoder.
+  const cpu = mode === 'justin' || isCpuCodec(els.codecSelect.value || 'libx264');
+  const subsOn = els.burnSubs.checked && !els.burnSubs.disabled;
+  const blocked = !cpu || subsOn;
+  els.chunkedEnable.disabled = blocked;
+  els.chunkRow.hidden = !els.chunkedEnable.checked || blocked;
+  if (!cpu) {
+    els.chunkHint.innerHTML = 'Chunking accelerates <strong>CPU</strong> encodes only — the selected hardware encoder already uses the GPU. Pick a CPU codec to enable it.';
+  } else if (subsOn) {
+    els.chunkHint.innerHTML = 'Not available with burned-in subtitles (per-chunk timestamps would desync). Turn off subtitle burn-in to use chunking.';
+  } else {
+    els.chunkHint.innerHTML = 'Splits the source, encodes chunks concurrently across all cores, then merges — a big speedup for slow CPU encodes (x265 / AV1). Keep <strong>Max concurrent encodes</strong> at 1 when using this. Applies to full-clip encodes (trimming falls back to a single pass).';
+  }
+}
+els.chunkedEnable.addEventListener('change', () => {
+  savedChunked.set(els.chunkedEnable.checked);
+  syncChunkedUI();
+});
+els.chunkWorkers.addEventListener('change', () => {
+  let n = parseInt(els.chunkWorkers.value, 10) || 2;
+  n = Math.max(1, Math.min(cpuCores || 32, n));
+  els.chunkWorkers.value = String(n);
+  savedChunkWorkers.set(n);
+});
+els.chunkLength.addEventListener('change', () => {
+  let n = parseInt(els.chunkLength.value, 10) || 10;
+  n = Math.max(2, Math.min(600, n));
+  els.chunkLength.value = String(n);
+  savedChunkLength.set(n);
 });
 
 // ---------- Subtitle track dropdown ----------
@@ -1004,8 +1141,10 @@ async function startCompress() {
   const queued = queue.filter(q => q.status === 'queued');
   if (!queued.length) return toast('error', 'Queue is empty', 'Add at least one video.');
 
-  const targetMb = mode === 'crf' ? null : resolveTargetMb();
-  if (mode !== 'crf' && targetMb === null) return;
+  // CRF and Justin modes are size-free — no target-size budget to resolve.
+  const sizeFreeMode = mode === 'crf' || mode === 'justin';
+  const targetMb = sizeFreeMode ? null : resolveTargetMb();
+  if (!sizeFreeMode && targetMb === null) return;
 
   const env = await window.api.checkEnv();
   if (!env.ffmpeg || !env.ffprobe) {
@@ -1045,6 +1184,12 @@ async function startCompress() {
     subtitleStyle: els.burnSubs.checked ? buildSubtitleStyle() : null,
     customResolution: els.customRes.value.trim() || null,
     customFramerate: els.customFps.value.trim() || null,
+    // Chunked parallel encoding — only forward as enabled when it's actually
+    // applicable (CPU codec, no subtitle burn-in); main.js also falls back to
+    // a single process when the clip is too short to chunk.
+    chunked: els.chunkedEnable.checked && !els.chunkedEnable.disabled,
+    chunkLength: parseInt(els.chunkLength.value, 10) || 10,
+    chunkWorkers: parseInt(els.chunkWorkers.value, 10) || 2,
   };
 
   // Encode one item; promise resolves when that item finishes (success or fail).
@@ -1200,6 +1345,7 @@ function syncSubsUI() {
   els.subCustomRow.hidden = els.subStylePreset.value !== 'custom';
 }
 els.burnSubs.addEventListener('change', syncSubsUI);
+els.burnSubs.addEventListener('change', syncChunkedUI);
 els.subStylePreset.addEventListener('change', syncSubsUI);
 
 // ===========================================================================
@@ -1235,6 +1381,9 @@ function snapshotCurrentSettings() {
     customFps: els.customFps.value,
     crf: parseInt(els.crfSlider.value, 10),
     concurrency,
+    chunked: els.chunkedEnable.checked,
+    chunkWorkers: parseInt(els.chunkWorkers.value, 10) || 2,
+    chunkLength: parseInt(els.chunkLength.value, 10) || 10,
   };
 }
 
@@ -1283,6 +1432,10 @@ function applyProfile(p) {
     els.concurrencySlider.value = String(concurrency);
     els.concurrencySlider.dispatchEvent(new Event('input'));
   }
+  if (typeof p.chunked === 'boolean') { els.chunkedEnable.checked = p.chunked; savedChunked.set(p.chunked); }
+  if (Number.isFinite(p.chunkWorkers)) { els.chunkWorkers.value = String(p.chunkWorkers); savedChunkWorkers.set(p.chunkWorkers); }
+  if (Number.isFinite(p.chunkLength)) { els.chunkLength.value = String(p.chunkLength); savedChunkLength.set(p.chunkLength); }
+  syncChunkedUI();
 }
 
 function refreshProfileDropdown(selectedName) {
@@ -1365,13 +1518,22 @@ function restorePersistedSettings() {
   // Custom res / fps.
   els.customRes.value = savedCustomRes.get();
   els.customFps.value = savedCustomFps.get();
+  // Chunked encoding controls.
+  els.chunkedEnable.checked = savedChunked.get();
+  els.chunkWorkers.value = String(savedChunkWorkers.get());
+  els.chunkLength.value = String(savedChunkLength.get());
   refreshAudioHint();
+  updateModeHint();
+  syncJustinUI();
+  syncChunkedUI();
 }
 
 window.api.onEncoders(populateCodecs);
 (async () => {
   const env = await window.api.checkEnv();
   els.versionTag.textContent = `v${env.appVersion}`;
+  cpuCores = env.cpuCores || 4;
+  els.chunkWorkers.max = String(Math.max(1, cpuCores));
   osIsDark = !!env.isDarkOS;
   if (document.documentElement.dataset.themeChoice === 'auto') applyTheme('auto');
 

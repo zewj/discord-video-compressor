@@ -37,7 +37,7 @@ If the chosen target leaves less than ~100 kbps for video, the app refuses to en
 ## Features
 
 ### Workflow
-- **Batch queue** — drop or pick multiple files. Encodes run with configurable parallelism (1–4 jobs) — sequential by default for stability, bumped up for multi-core machines doing CPU encodes. Each row shows live status (queued / encoding / done / failed) with per-item progress, "Folder", "Copy", and "Remove" actions.
+- **Batch queue** — drop or pick multiple files, or use **Add folder…** to queue every `.mp4` / `.mkv` / `.avi` / `.mov` in a directory (mirroring `discord_vid.bat`'s "input folder" flow). Encodes run with configurable parallelism (1–4 jobs) — sequential by default for stability, bumped up for multi-core machines doing CPU encodes. Each row shows live status (queued / encoding / done / failed) with per-item progress, "Folder", "Copy", and "Remove" actions.
 - **Visual trim** — select a clip and a video preview appears in the Encoding tab with a draggable timeline. Two handles set start/end; a play button loops within the trim range. Numerical mm:ss inputs still work for precision.
 - **Copy to clipboard** — paste the compressed file straight into Discord. Uses the OS file clipboard (`Set-Clipboard -Path` on Windows, `wl-copy` / `xclip` on Linux).
 - **Persistent settings** — tier, mode, preset, audio bitrate, custom resolution/framerate, mute, burn-subs, CRF, concurrency, and the Custom MB value all persist across launches via `localStorage`.
@@ -49,10 +49,12 @@ If the chosen target leaves less than ~100 kbps for video, the app refuses to en
   - NVIDIA NVENC H.264 / HEVC
   - Intel QuickSync H.264 / HEVC
   - AMD AMF H.264 / HEVC
-- **Three modes**:
+- **Four modes**:
   - **Two-pass** (CPU codecs only) — most accurate target sizing.
   - **Fast** (1-pass CBR) — quicker, works with all encoders including HW.
   - **Quality (CRF)** — quality-driven, ignores tier as a hard cap. Slider 0–100% maps to per-codec CRF/CQ/QP. Use for "make this look as good as you can, file size is whatever."
+  - **Justin** — a faithful port of the `discord_vid.bat` script: the fixed recipe `-vcodec libx264 -preset fast -crf 23 -acodec aac -b:a 192k -movflags +faststart`. Copies the source to a temp file first (the .bat's locked-file workaround), always outputs `<name>_discord.mp4`, and ignores the codec / size-tier / quality controls (it honors the trim window when set). **This is the default mode.**
+- **Chunked parallel encoding** (ported from [NotEnoughAV1Encodes](https://github.com/Alkl58/NotEnoughAV1Encodes)) — splits the source into segments, encodes them concurrently across N workers, then concatenates and remuxes the audio. On a many-core machine this is a big speedup for slow CPU encodes (x265 / SVT-AV1 / libaom). CPU codecs only; not used with burned-in subtitles or trimming (those fall back to the single-process path). Configure worker count and chunk length in the Encoding tab.
 - **Quality presets**: Fastest / Balanced / Max quality. Maps to per-encoder presets (`p1..p7` for NVENC, `veryfast..veryslow` for libx264, `0..13` for SVT-AV1, etc.)
 - **Trim**: visual timeline with draggable handles + numerical inputs (`mm:ss` / `hh:mm:ss` / decimal seconds). Bitrate is recomputed for the trimmed window.
 - **Audio bitrate slider** (32–256 kbps) and **Keep original audio** passthrough — lets you remux the source audio without re-encoding when the codec is compatible with the chosen container (AAC/AC3/EAC3/MP3/ALAC/Opus/FLAC into MP4, Opus/Vorbis into WebM).
@@ -170,10 +172,10 @@ The Linux build is a folder distribution (no installer). To uninstall, just dele
 ## Usage
 
 1. **Drop a video onto the window** or click **Browse**. The output path is suggested next to the source as `<name>_discord.mp4` and auto-incremented if a file with that name already exists.
-2. Pick a **Discord tier**. Tap **Custom** to enter your own MB target.
+2. Pick a **Discord tier** (used by the size-targeting modes; the default **Justin** mode is a fixed-quality recipe and ignores tiers). Tap **Custom** to enter your own MB target.
 3. Open **Encoding options** (collapsible) to:
    - Pick a codec / encoder (CPU or HW)
-   - Choose mode (Two-pass / Fast)
+   - Choose mode — **Justin** (default; the `discord_vid.bat` recipe), Two-pass, Fast, or Quality (CRF)
    - Choose preset (Fastest / Balanced / Max quality)
    - Trim with start/end times in `mm:ss`
    - Toggle **Strip audio** for max video quality
@@ -250,8 +252,20 @@ npm run build:all
 4. **Encode**:
    - **Two-pass** (CPU only): pass 1 writes the analysis log; pass 2 produces the MP4 using that analysis. Most accurate sizing.
    - **Fast** (single-pass CBR): one ffmpeg invocation with `-b:v <kbps>` + `-maxrate` + `-bufsize` for predictability. Required for all HW encoders.
+   - **Justin** (single-pass CRF, faithful to `discord_vid.bat`): the source is first copied to `%TEMP%`/`os.tmpdir()` to dodge locked-file errors, then encoded with the fixed `-vcodec libx264 -preset fast -crf 23 -acodec aac -b:a 192k -movflags +faststart` recipe; the temp copy is removed afterward. No bitrate budget, no auto-downscale — the recipe decides the size.
 5. **Resolution scaling** — auto-downscales (720p / 1080p) for tighter targets to keep quality up.
 6. **Cleanup** — two-pass `.log` and `.log.mbtree` files are deleted after pass 2.
+
+### Chunked parallel encoding (the NotEnoughAV1Encodes method)
+
+When **Chunked parallel encoding** is enabled (CPU codecs, full-clip, no subtitle burn-in), the encode runs a four-stage pipeline in a temp directory instead of a single ffmpeg process:
+
+1. **Split** — `ffmpeg ... -map 0:v:0 -c copy -reset_timestamps 1 -f segment -segment_time <len>` cuts the source video into keyframe-bounded segments. Stream copy keeps this near-instant and lossless (no giant intermediate files).
+2. **Encode** — every segment is encoded independently, *N workers* at a time, using the exact same video args the single-process path would use. This saturates all CPU cores on one file — the whole point of the technique.
+3. **Concat** — the encoded segments are joined with the concat demuxer (`-f concat -safe 0 -c copy`).
+4. **Mux** — the source audio is remuxed onto the concatenated video and the final container is written (`+faststart` for MP4).
+
+Every sub-process goes through the same `runFfmpeg` plumbing, so cancellation, logging, and progress work identically; the System tab shows all the concurrent ffmpeg workers. Each chunk is single-pass, so size precision matches **Fast** mode rather than **Two-pass**.
 
 Progress comes from ffmpeg's `-progress pipe:1` (`out_time_us` for elapsed, `speed=` for ETA computation).
 

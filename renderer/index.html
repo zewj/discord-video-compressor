@@ -8,25 +8,28 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div class="aurora" aria-hidden="true">
-    <span class="blob b1"></span>
-    <span class="blob b2"></span>
-    <span class="blob b3"></span>
-  </div>
-
   <header class="titlebar">
     <div class="brand">
       <span class="brand-dot"></span>
       <span class="brand-text">Discord Video Compressor</span>
       <span class="brand-version" id="version-tag">v—</span>
     </div>
-    <div class="theme-switch" role="tablist" aria-label="Theme">
-      <button class="theme-btn theme-auto" data-theme="auto" title="Follow system" aria-label="Auto theme"></button>
-      <button class="theme-btn" data-theme="midnight" title="Midnight" aria-label="Midnight theme"></button>
-      <button class="theme-btn" data-theme="discord" title="Discord" aria-label="Discord theme"></button>
-      <button class="theme-btn" data-theme="sunset" title="Sunset" aria-label="Sunset theme"></button>
-      <button class="theme-btn" data-theme="forest" title="Forest" aria-label="Forest theme"></button>
-      <button class="theme-btn" data-theme="light" title="Light" aria-label="Light theme"></button>
+    <div class="theme-menu" id="theme-menu">
+      <button class="theme-trigger" id="theme-trigger" aria-haspopup="listbox" aria-expanded="false" aria-label="Choose theme">
+        <span class="theme-dot" id="theme-trigger-dot" data-theme="midnight"></span>
+        <span id="theme-trigger-label">Midnight</span>
+        <svg class="theme-caret" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <div class="theme-dropdown" id="theme-dropdown" role="listbox" aria-label="Theme" hidden>
+        <button class="theme-option" data-theme="auto" role="option"><span class="theme-dot" data-theme="auto"></span>Auto</button>
+        <button class="theme-option" data-theme="midnight" role="option"><span class="theme-dot" data-theme="midnight"></span>Midnight</button>
+        <button class="theme-option" data-theme="discord" role="option"><span class="theme-dot" data-theme="discord"></span>Discord</button>
+        <button class="theme-option" data-theme="sunset" role="option"><span class="theme-dot" data-theme="sunset"></span>Sunset</button>
+        <button class="theme-option" data-theme="forest" role="option"><span class="theme-dot" data-theme="forest"></span>Forest</button>
+        <button class="theme-option" data-theme="akeno" role="option"><span class="theme-dot" data-theme="akeno"></span>Akeno</button>
+        <button class="theme-option" data-theme="astolfo" role="option"><span class="theme-dot" data-theme="astolfo"></span>Astolfo</button>
+        <button class="theme-option" data-theme="light" role="option"><span class="theme-dot" data-theme="light"></span>Light</button>
+      </div>
     </div>
   </header>
 
@@ -67,6 +70,7 @@
             </span>
             <div class="picker">
               <button class="btn btn-ghost" id="pick-input">Add file...</button>
+              <button class="btn btn-ghost" id="pick-folder">Add folder...</button>
               <button class="btn btn-ghost btn-tiny" id="clear-queue" disabled>Clear queue</button>
             </div>
 
@@ -83,6 +87,11 @@
 
         <div class="row">
           <span class="field-label">Discord tier</span>
+          <div class="justin-note" id="justin-note" hidden>
+            <strong>Justin mode is on.</strong> Compression uses the fixed
+            <code>discord_vid.bat</code> recipe (libx264 · preset fast · CRF 23 · AAC 192k · faststart),
+            so these size tiers are ignored. Switch the mode on the <strong>Encoding</strong> tab to target a size.
+          </div>
           <div class="tiers" role="radiogroup" aria-label="Discord upload tier">
             <label class="tier" data-tier="free">
               <input type="radio" name="tier" value="free" checked />
@@ -161,14 +170,15 @@
             <span class="opt-hint" id="codec-hint">Probing...</span>
           </label>
 
-          <label class="opt">
+          <label class="opt opt-wide">
             <span class="opt-label">Mode</span>
             <div class="seg" role="radiogroup" aria-label="Encoding mode">
               <button type="button" class="seg-btn" data-mode="twopass">Two-pass</button>
-              <button type="button" class="seg-btn active" data-mode="fast">Fast</button>
+              <button type="button" class="seg-btn" data-mode="fast">Fast</button>
               <button type="button" class="seg-btn" data-mode="crf">Quality</button>
+              <button type="button" class="seg-btn active" data-mode="justin" title="Faithful discord_vid.bat recipe — libx264, preset fast, CRF 23, AAC 192k">Justin</button>
             </div>
-            <span class="opt-hint" id="mode-hint">Two-pass = accurate size · Fast = quick · Quality = CRF</span>
+            <span class="opt-hint" id="mode-hint">Justin = the discord_vid.bat recipe (libx264 · fast · CRF 23 · AAC 192k · faststart).</span>
           </label>
 
           <label class="opt opt-wide">
@@ -310,6 +320,29 @@
             </div>
             <span class="opt-hint">Higher = faster on multi-core systems but heavier load. Stick with 1 for HW encoders sharing a single GPU.</span>
           </div>
+
+          <div class="opt opt-wide">
+            <span class="opt-label">Chunked parallel encoding
+              <span class="dim-hint">(NotEnoughAV1Encodes method)</span></span>
+            <label class="check">
+              <input type="checkbox" id="chunked-enable" />
+              <span class="check-box" aria-hidden="true"></span>
+              <span>Split into chunks &amp; encode them in parallel</span>
+            </label>
+            <div class="chunk-row" id="chunk-row" hidden>
+              <label class="chunk-field">
+                <span class="opt-label">Workers</span>
+                <input id="chunk-workers" type="number" class="input-time"
+                       min="1" max="32" step="1" value="2" style="width: 84px" />
+              </label>
+              <label class="chunk-field">
+                <span class="opt-label">Chunk length <span class="dim-hint">(s)</span></span>
+                <input id="chunk-length" type="number" class="input-time"
+                       min="2" max="600" step="1" value="10" style="width: 90px" />
+              </label>
+            </div>
+            <span class="opt-hint" id="chunk-hint">Splits the source, encodes chunks concurrently across all cores, then merges — a big speedup for slow CPU encodes (x265 / AV1). CPU codecs only; keep <strong>Max concurrent encodes</strong> at 1 when using this.</span>
+          </div>
         </div>
       </section>
 
@@ -377,6 +410,11 @@
       </div>
     </div>
   </main>
+
+  <div class="waifu" aria-hidden="true">
+    <img class="waifu-img waifu-akeno" src="assets/akeno.png" alt="" />
+    <img class="waifu-img waifu-astolfo" src="assets/astolfo.png" alt="" />
+  </div>
 
   <div class="drop-overlay" id="drop-overlay" aria-hidden="true">
     <div class="drop-pulse"></div>

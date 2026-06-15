@@ -1,0 +1,4 @@
+﻿Save your two character images here as:
+  akeno.png
+  astolfo.png
+(PNG with transparent background looks best.)
