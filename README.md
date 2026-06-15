@@ -64,8 +64,8 @@ If the chosen target leaves less than ~100 kbps for video, the app refuses to en
 - **Source metadata** displayed inline after picking a video: duration, resolution, codec(s), file size.
 
 ### UI / UX
-- **Six themes**: Auto (follows Windows dark/light), Midnight, Discord, Sunset, Forest, Light. Persists across launches.
-- **Animated UI**: aurora background, staggered card entrance, hover/select animations on tier cards, sweeping shine on primary button, shimmer on the progress bar.
+- **Eight themes**, picked from a named dropdown: Auto (follows Windows dark/light), Midnight, Discord, Sunset, Forest, Akeno, Astolfo, Light. Persists across launches. The Akeno/Astolfo themes optionally show character art behind the UI — drop your own `akeno.png` / `astolfo.png` into `renderer/assets/`.
+- **Animated UI**: staggered card entrance, hover/select animations on tier cards, sweeping shine on primary button, shimmer on the progress bar.
 - **Drag and drop** — drop a video anywhere on the window to load it.
 - **Auto-incrementing output filename** — never overwrites an existing file (`name.mp4` → `name (1).mp4` etc.).
 - **ETA + speed multiplier** in the status line, parsed from ffmpeg's `speed=` output.
